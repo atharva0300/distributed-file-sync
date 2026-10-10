@@ -1,0 +1,95 @@
+# =========================
+# Java / Maven
+# =========================
+
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven wrapper generated files
+.mvn/timing.properties
+.m2/
+
+# =========================
+# Spring Boot / Application
+# =========================
+
+*.log
+logs/
+
+# =========================
+# Environment / Secrets
+# =========================
+
+.env
+.env.*
+!.env.example
+
+# =========================
+# Local File Storage
+# =========================
+# Anchored to repo/module root (leading slash) — NOT a bare "storage/", which
+# would also match any path component named "storage" anywhere in the tree,
+# including the com.filesync.storage Java package. That exact bug is why
+# storage-service's entire source tree was silently untracked for a long time:
+# `git add` never failed or warned, it just quietly ignored every file under it.
+/storage-service/storage/
+/storage/
+uploads/
+data/
+test-storage/
+
+# =========================
+# IDEs
+# =========================
+
+.idea/
+*.iml
+
+.vscode/
+.classpath
+.project
+.settings/
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+# =========================
+# Frontend / Node
+# =========================
+
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# =========================
+# npm / tooling caches
+# =========================
+
+.npm/
+.eslintcache
+
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# implementation plan 
+distributed_file_sync_implementation_plan.md
+
+# Explanations generated for interview prep
+explanations/
+qna.md
+workflow.md
