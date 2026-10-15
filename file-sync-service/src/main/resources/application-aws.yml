@@ -1,0 +1,47 @@
+# AWS Production Profile (Free Tier Optimized)
+spring:
+  datasource:
+    # Previously these three keys were left blank in this profile, which overrode the
+    # (correct) ${DATABASE_URL}/${DATABASE_USERNAME}/${DATABASE_PASSWORD} placeholders from
+    # the base application.yml with null — i.e. the aws profile could never actually reach
+    # RDS. Re-reference the same env vars explicitly, with no insecure default, so a missing
+    # env var fails fast at startup instead of silently nulling the datasource.
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Micro instance memory optimization (1GB RAM on t3.micro)
+      maximum-pool-size: 5
+      minimum-idle: 2
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+app:
+  storage:
+    type: s3
+  aws:
+    region: ${AWS_REGION}
+    s3:
+      bucket: ${S3_BUCKET_NAME}
+  internal:
+    # No default: fail fast rather than silently running HMAC auth on the dev key in prod.
+    api-key: ${INTERNAL_API_KEY}
+
+logging:
+  level:
+    com.filesync: INFO
+    org.springframework.web: WARN

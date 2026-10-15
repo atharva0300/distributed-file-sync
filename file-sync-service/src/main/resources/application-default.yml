@@ -1,0 +1,10 @@
+# ===========================================================
+# Default profile — real PostgreSQL + real MongoDB via Docker
+# Disables Flapdoodle embedded Mongo (jar is on classpath but
+# must not auto-configure when a real MongoDB container is up)
+# ===========================================================
+
+spring:
+  autoconfigure:
+    exclude:
+      - de.flapdoodle.embed.mongo.spring.autoconfigure.EmbeddedMongoAutoConfiguration

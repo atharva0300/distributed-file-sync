@@ -1,0 +1,1 @@
+ALTER TABLE upload_sessions ADD COLUMN chunk_size BIGINT NOT NULL DEFAULT 4194304;
