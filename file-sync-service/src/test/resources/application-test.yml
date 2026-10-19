@@ -1,0 +1,34 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:15-alpine:///testdb
+    username: test
+    password: test
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+
+app:
+  jwt:
+    secret: test-secret-key-at-least-256-bits-long-for-hmac-sha256
+    expiration-ms: 3600000
+  storage-service:
+    url: http://localhost:8081
+  sync:
+    chunk-size: 1048576  # 1 MB for tests (legacy property)
+    background-worker:
+      fixed-delay-ms: 60000
+      max-retries: 3
+  chunking:
+    mode: FIXED
+    min-size: 262144      # 256 KB
+    target-size: 1048576  # 1 MB
+    max-size: 1048576     # 1 MB
+  upload:
+    max-concurrent-sessions: 50
