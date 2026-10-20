@@ -1,0 +1,17 @@
+# AWS profile — S3-backed storage, no insecure defaults.
+# Activate with: -Dspring.profiles.active=aws (same convention as file-sync-service).
+app:
+  storage:
+    type: s3
+  aws:
+    region: ${AWS_REGION}
+    s3:
+      bucket: ${S3_BUCKET_NAME}
+  internal:
+    # No default here on purpose: deploying with this profile and no INTERNAL_API_KEY set
+    # should fail fast at startup rather than silently running on the dev fallback key.
+    api-key: ${INTERNAL_API_KEY}
+
+logging:
+  level:
+    com.filesync.storage: INFO

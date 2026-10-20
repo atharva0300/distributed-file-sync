@@ -1,0 +1,36 @@
+server:
+  # Binds to all interfaces so it's reachable inside the Docker network / VPC by service name.
+  # It must never be exposed publicly — keep it off the internet-facing security group / ALB
+  # listener in every environment (see aws/cloudformation.yml, which only exposes :8080).
+  port: ${STORAGE_PORT:8081}
+
+spring:
+  application:
+    name: storage-service
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 60MB
+
+app:
+  storage:
+    type: ${STORAGE_TYPE:local}
+    path: ${STORAGE_PATH:./storage}
+  aws:
+    region: ${AWS_REGION:us-east-1}
+    s3:
+      bucket: ${S3_BUCKET_NAME:filesync-chunks}
+  # Shared secret used to verify HMAC-signed requests from file-sync-service (InternalAuthFilter).
+  # The literal below is a local-dev-only fallback — every real deployment (see application-aws
+  # profile below / aws/cloudformation.yml) must inject a real secret via INTERNAL_API_KEY.
+  internal:
+    api-key: ${INTERNAL_API_KEY:dev-internal-key}
+
+logging:
+  level:
+    com.filesync.storage: DEBUG
+    org.springframework.web: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+

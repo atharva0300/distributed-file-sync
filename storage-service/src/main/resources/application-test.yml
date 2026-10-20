@@ -1,0 +1,16 @@
+server:
+  port: 0
+
+spring:
+  application:
+    name: storage-service-test
+
+app:
+  storage:
+    type: local
+    path: ./target/test-storage
+
+logging:
+  level:
+    com.filesync.storage: INFO
+
