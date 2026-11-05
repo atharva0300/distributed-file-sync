@@ -23,4 +23,9 @@ public interface FileVersionRepository extends JpaRepository<FileVersion, Long> 
     int deleteOldVersions(@org.springframework.data.repository.query.Param("maxVersions") int maxVersions);
 
     Optional<FileVersion> findByUploadSessionId(Long uploadSessionId);
+
+    /** Distinct chunk hashes of a version, without materialising the chunk entities. */
+    @org.springframework.data.jpa.repository.Query(
+            "SELECT DISTINCT c.hash FROM FileVersionChunk fvc JOIN fvc.chunk c WHERE fvc.fileVersion.id = :versionId")
+    List<String> findChunkHashesByVersionId(@org.springframework.data.repository.query.Param("versionId") Long versionId);
 }

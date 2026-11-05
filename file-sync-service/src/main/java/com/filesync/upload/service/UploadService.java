@@ -697,9 +697,9 @@ public class UploadService {
         }
 
         // Build the server's hash set from the current version
-        List<FileVersionChunk> serverChunks = file.getCurrentVersionId().getChunks();
-        Set<String> serverHashes = serverChunks.stream()
-                .map(fvc -> fvc.getChunk().getHash().toLowerCase())
+        Set<String> serverHashes = versionRepository.findChunkHashesByVersionId(file.getCurrentVersionId().getId())
+                .stream()
+                .map(String::toLowerCase)
                 .collect(Collectors.toCollection(HashSet::new));
 
         // Delta = client hashes NOT present on server (hash-set identity, not index identity)
@@ -714,7 +714,7 @@ public class UploadService {
         }
 
         log.info("DELTA_COMPUTED: fileId={}, userId={}, clientChunks={}, serverChunks={}, missingChunks={}",
-                fileId, userId, clientManifest.size(), serverChunks.size(), missingHashes.size());
+                fileId, userId, clientManifest.size(), serverHashes.size(), missingHashes.size());
 
         return missingHashes;
     }
