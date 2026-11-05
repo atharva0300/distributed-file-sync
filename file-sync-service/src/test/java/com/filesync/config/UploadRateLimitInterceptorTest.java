@@ -1,6 +1,7 @@
 package com.filesync.config;
 
 import com.filesync.security.UserPrincipal;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -14,8 +15,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class UploadRateLimitInterceptorTest {
 
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private final UploadRateLimitProperties props = new UploadRateLimitProperties();
-    private final UploadRateLimitInterceptor interceptor = new UploadRateLimitInterceptor(props);
+    private final UploadRateLimitInterceptor interceptor = new UploadRateLimitInterceptor(props, meters);
 
     @AfterEach
     void clear() {
@@ -51,6 +53,7 @@ class UploadRateLimitInterceptorTest {
         assertEquals(429, res.getStatus());
         assertNotNull(res.getHeader("Retry-After"));
         assertTrue(Long.parseLong(res.getHeader("Retry-After")) >= 1);
+        assertEquals(1.0, meters.counter("filesync.upload.rate_limited", "class", "CONTROL").count());
     }
 
     @Test

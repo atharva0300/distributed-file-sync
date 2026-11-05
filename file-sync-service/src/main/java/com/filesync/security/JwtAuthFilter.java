@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
@@ -15,6 +16,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.List;
 
 @Slf4j
 @Component
@@ -22,7 +24,6 @@ import java.io.IOException;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider tokenProvider;
-    private final UserDetailsServiceImpl userDetailsService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -32,8 +33,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String token = extractToken(request);
 
             if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
-                Long userId = tokenProvider.getUserIdFromToken(token);
-                UserDetails userDetails = userDetailsService.loadUserById(userId);
+                // Identity comes from the signed token: no database round trip per request.
+                // A deleted account therefore stays authorised until its token expires.
+                UserDetails userDetails = new UserPrincipal(
+                        tokenProvider.getUserIdFromToken(token),
+                        tokenProvider.getEmailFromToken(token),
+                        "",
+                        List.of(new SimpleGrantedAuthority("ROLE_USER")));
 
                 UsernamePasswordAuthenticationToken auth =
                         new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
@@ -42,7 +48,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(auth);
             }
         } catch (Exception ex) {
-            log.error("Could not set user authentication in security context", ex);
+            log.warn("Could not authenticate request: {}", ex.getClass().getSimpleName());
         }
 
         filterChain.doFilter(request, response);
@@ -52,16 +58,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         String bearerToken = request.getHeader("Authorization");
         if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
             return bearerToken.substring(7);
-        }
-        // Browsers' EventSource API cannot set a custom Authorization header, so for the
-        // SSE subscription endpoint only, accept the token as a query parameter instead.
-        // Scoped to this one path so a token isn't accepted from the URL anywhere else
-        // (query strings can end up in proxy/access logs).
-        if ("/api/sync/events".equals(request.getRequestURI())) {
-            String queryToken = request.getParameter("token");
-            if (StringUtils.hasText(queryToken)) {
-                return queryToken;
-            }
         }
         return null;
     }

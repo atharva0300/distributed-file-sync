@@ -101,10 +101,13 @@ app:
     max-size: ${CHUNKING_MAX_SIZE:8388608}    # 8 MB
 
 # SpringDoc / Swagger
+# Off unless SWAGGER_ENABLED=true (enabled in the dev profile): the API surface is not public in prod.
 springdoc:
   api-docs:
+    enabled: ${SWAGGER_ENABLED:false}
     path: /api-docs
   swagger-ui:
+    enabled: ${SWAGGER_ENABLED:false}
     path: /swagger-ui.html
     tags-sorter: alpha
     operations-sorter: alpha
@@ -113,8 +116,25 @@ springdoc:
 # Logging
 logging:
   level:
-    com.filesync: DEBUG
+    com.filesync: ${LOG_LEVEL:INFO}
     org.springframework.web: INFO
     org.hibernate.SQL: WARN
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Liveness/readiness probes are public (orchestrators call them unauthenticated); metrics need
+# an authenticated caller. Health details are hidden from anonymous callers.
+management:
+  health:
+    # Redis is optional (only the redis backplane uses it); an unused Redis must not fail readiness.
+    redis:
+      enabled: ${REDIS_HEALTH_ENABLED:false}   # set true together with NOTIFICATIONS_BACKPLANE=redis
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never

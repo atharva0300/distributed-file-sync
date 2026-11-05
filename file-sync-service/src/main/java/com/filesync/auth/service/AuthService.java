@@ -32,7 +32,7 @@ public class AuthService {
         User user = new User(request.email(), passwordEncoder.encode(request.password()));
         userRepository.save(user);
 
-        log.info("USER_REGISTERED: userId={}, email={}", user.getId(), user.getEmail());
+        log.info("USER_REGISTERED: userId={}", user.getId());
 
         String token = jwtTokenProvider.generateToken(user.getId(), user.getEmail());
         return new AuthResponse(token, user.getId(), user.getEmail());
@@ -47,7 +47,7 @@ public class AuthService {
             throw new UnauthorizedException("Invalid email or password");
         }
 
-        log.info("USER_LOGIN: userId={}, email={}", user.getId(), user.getEmail());
+        log.info("USER_LOGIN: userId={}", user.getId());
 
         String token = jwtTokenProvider.generateToken(user.getId(), user.getEmail());
         return new AuthResponse(token, user.getId(), user.getEmail());

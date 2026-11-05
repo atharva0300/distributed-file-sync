@@ -1,5 +1,6 @@
 package com.filesync.sync.service;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import com.filesync.conflict.entity.Conflict;
 import com.filesync.conflict.repository.ConflictRepository;
 import com.filesync.common.exception.SyncConflictException;
@@ -76,6 +77,8 @@ public class SyncWorker {
     @Value("${app.sync.background-worker.heartbeat-interval-ms:60000}")
     private long heartbeatIntervalMs;
 
+    private final MeterRegistry meterRegistry;
+
     public SyncWorker(SyncOperationRepository syncOperationRepository,
                       FileRepository fileRepository,
                       ConflictRepository conflictRepository,
@@ -84,7 +87,9 @@ public class SyncWorker {
                       UploadService uploadService,
                       ObjectMapper objectMapper,
                       @Qualifier("syncWorkerExecutor") ThreadPoolTaskExecutor workerExecutor,
-                      @Qualifier("syncHeartbeatScheduler") ThreadPoolTaskScheduler heartbeatScheduler) {
+                      @Qualifier("syncHeartbeatScheduler") ThreadPoolTaskScheduler heartbeatScheduler,
+                      MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
         this.syncOperationRepository = syncOperationRepository;
         this.fileRepository = fileRepository;
         this.conflictRepository = conflictRepository;
@@ -95,6 +100,10 @@ public class SyncWorker {
         this.workerExecutor = workerExecutor;
         this.heartbeatScheduler = heartbeatScheduler;
         this.slots = new Semaphore(workerExecutor.getMaxPoolSize());
+    }
+
+    private void outcome(String outcome) {
+        meterRegistry.counter("filesync.sync.operations", "outcome", outcome).increment();
     }
 
     /**
@@ -213,11 +222,13 @@ public class SyncWorker {
                 fencedOp.setLeaseExpiresAt(null);
                 syncOperationRepository.save(fencedOp);
                 log.info("WORKER_COMPLETED: workerId={}, opId={}", workerId, op.getId());
+                outcome("completed");
             });
 
         } catch (SyncConflictException e) {
             // Business conflict (OCC baseVersion mismatch) → mark CONFLICT
             log.warn("WORKER_CONFLICT: workerId={}, opId={}, message={}", workerId, op.getId(), e.getMessage());
+            outcome("conflict");
             markConflict(op, e.getFileId(), e.getClientBaseVersion(), e.getServerCurrentVersion());
         } catch (Exception e) {
             log.error("WORKER_FAILED: workerId={}, opId={}", workerId, op.getId(), e);
@@ -367,6 +378,7 @@ public class SyncWorker {
                         nextRetryCount, errorMsg, reloadedOp.getAvailableAt());
                 if (updated > 0) {
                     log.error("WORKER_FAILED_PERMANENT: workerId={}, opId={}", workerId, reloadedOp.getId());
+                    outcome("failed");
                 }
             } else {
                 int delaySeconds = (int) Math.pow(2, nextRetryCount); // Exponential backoff

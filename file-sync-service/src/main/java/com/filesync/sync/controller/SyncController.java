@@ -35,9 +35,9 @@ public class SyncController {
     @GetMapping(value = "/events", produces = org.springframework.http.MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "Subscribe to this user's file/sync events via Server-Sent Events",
             description = "One-directional push: the client never sends anything back over this " +
-                    "connection, it just learns when to re-fetch via REST. Browsers cannot attach a " +
-                    "custom Authorization header to an EventSource request, so the JWT is also accepted " +
-                    "as a ?token= query parameter on this endpoint only.")
+                    "connection, it just learns when to re-fetch via REST. Authenticate with the " +
+                    "Authorization header like every other endpoint (the client streams with fetch, " +
+                    "not EventSource, so tokens never appear in URLs).")
     public SseEmitter subscribeToEvents(@AuthenticationPrincipal UserPrincipal principal) {
         return syncNotificationService.subscribe(principal.getId());
     }

@@ -1,6 +1,7 @@
 package com.filesync.config;
 
 import com.filesync.security.UserPrincipal;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.ConsumptionProbe;
@@ -47,8 +48,11 @@ public class UploadRateLimitInterceptor implements HandlerInterceptor {
     private final UploadRateLimitProperties properties;
     private final Map<Key, Entry> buckets = new ConcurrentHashMap<>();
 
-    public UploadRateLimitInterceptor(UploadRateLimitProperties properties) {
+    private final MeterRegistry meterRegistry;
+
+    public UploadRateLimitInterceptor(UploadRateLimitProperties properties, MeterRegistry meterRegistry) {
         this.properties = properties;
+        this.meterRegistry = meterRegistry;
     }
 
     static RequestClass classify(String method, String path) {
@@ -78,6 +82,7 @@ public class UploadRateLimitInterceptor implements HandlerInterceptor {
         if (probe.isConsumed()) {
             return true;
         }
+        meterRegistry.counter("filesync.upload.rate_limited", "class", requestClass.name()).increment();
         long retryAfterSeconds = Math.max(1, Duration.ofNanos(probe.getNanosToWaitForRefill()).toSeconds() + 1);
         log.warn("RATE_LIMITED: userId={}, class={}, retryAfter={}s", principal.getId(), requestClass, retryAfterSeconds);
         response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());

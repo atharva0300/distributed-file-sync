@@ -25,12 +25,4 @@ public class UserDetailsServiceImpl implements UserDetailsService {
         return new UserPrincipal(user.getId(), user.getEmail(), user.getPasswordHash(),
                 List.of(new SimpleGrantedAuthority("ROLE_USER")));
     }
-
-    public UserDetails loadUserById(Long userId) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new UsernameNotFoundException("User not found with id: " + userId));
-
-        return new UserPrincipal(user.getId(), user.getEmail(), user.getPasswordHash(),
-                List.of(new SimpleGrantedAuthority("ROLE_USER")));
-    }
 }
