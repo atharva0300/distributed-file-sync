@@ -11,14 +11,21 @@ import com.filesync.sync.repository.SyncOperationRepository;
 import com.filesync.upload.service.UploadService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.List;
 import java.util.UUID;
 
@@ -43,7 +50,6 @@ import java.util.UUID;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class SyncWorker {
 
     private final SyncOperationRepository syncOperationRepository;
@@ -53,8 +59,13 @@ public class SyncWorker {
     private final FileService fileService;
     private final UploadService uploadService;
     private final ObjectMapper objectMapper;
+    private final ThreadPoolTaskExecutor workerExecutor;
+    private final ThreadPoolTaskScheduler heartbeatScheduler;
 
     private final String workerId = UUID.randomUUID().toString();
+
+    /** One permit per worker thread: operations are only claimed when a thread is free to run them. */
+    private final Semaphore slots;
 
     @Value("${app.sync.background-worker.max-retries:3}")
     private int maxRetries;
@@ -62,13 +73,79 @@ public class SyncWorker {
     @Value("${app.sync.background-worker.lease-duration-minutes:10}")
     private int leaseDurationMinutes;
 
-    private final java.util.concurrent.ScheduledExecutorService heartbeatExecutor = java.util.concurrent.Executors.newScheduledThreadPool(4);
+    @Value("${app.sync.background-worker.heartbeat-interval-ms:60000}")
+    private long heartbeatIntervalMs;
 
-    @Scheduled(fixedDelayString = "${app.sync.background-worker.fixed-delay-ms:5000}")
+    public SyncWorker(SyncOperationRepository syncOperationRepository,
+                      FileRepository fileRepository,
+                      ConflictRepository conflictRepository,
+                      TransactionTemplate transactionTemplate,
+                      FileService fileService,
+                      UploadService uploadService,
+                      ObjectMapper objectMapper,
+                      @Qualifier("syncWorkerExecutor") ThreadPoolTaskExecutor workerExecutor,
+                      @Qualifier("syncHeartbeatScheduler") ThreadPoolTaskScheduler heartbeatScheduler) {
+        this.syncOperationRepository = syncOperationRepository;
+        this.fileRepository = fileRepository;
+        this.conflictRepository = conflictRepository;
+        this.transactionTemplate = transactionTemplate;
+        this.fileService = fileService;
+        this.uploadService = uploadService;
+        this.objectMapper = objectMapper;
+        this.workerExecutor = workerExecutor;
+        this.heartbeatScheduler = heartbeatScheduler;
+        this.slots = new Semaphore(workerExecutor.getMaxPoolSize());
+    }
+
+    /**
+     * Scheduled entry point: claims at most as many operations as there are free worker threads and
+     * hands them to the worker pool, so this method returns quickly and never blocks the scheduler.
+     */
+    @Scheduled(fixedDelayString = "${app.sync.background-worker.fixed-delay-ms:2000}")
+    public void dispatchPendingOperations() {
+        int reserved = 0;
+        while (reserved < BATCH_SIZE && slots.tryAcquire()) {
+            reserved++;
+        }
+        if (reserved == 0) {
+            return;
+        }
+        List<SyncOperation> claimed = List.of();
+        try {
+            claimed = claimOperations(reserved);
+        } finally {
+            slots.release(reserved - claimed.size());
+        }
+        for (SyncOperation op : claimed) {
+            try {
+                workerExecutor.execute(() -> {
+                    try {
+                        processSingleOperation(op);
+                    } finally {
+                        slots.release();
+                    }
+                });
+            } catch (RuntimeException rejected) {
+                // Only happens during shutdown; the lease expires and recoverStaleOperations re-queues it.
+                slots.release();
+                log.warn("WORKER_SUBMIT_REJECTED: opId={}", op.getId(), rejected);
+            }
+        }
+    }
+
+    /** Claims and processes one batch on the calling thread (used by tests and manual triggers). */
     public void processPendingOperations() {
-        // Phase A: Claim operations with FOR UPDATE SKIP LOCKED
-        List<SyncOperation> claimedOps = transactionTemplate.execute(status -> {
-            List<SyncOperation> ops = syncOperationRepository.claimOperations("PENDING", LocalDateTime.now(), 10);
+        for (SyncOperation op : claimOperations(BATCH_SIZE)) {
+            processSingleOperation(op);
+        }
+    }
+
+    private static final int BATCH_SIZE = 10;
+
+    /** Phase A: claim operations with FOR UPDATE SKIP LOCKED and a fresh lease token each. */
+    private List<SyncOperation> claimOperations(int max) {
+        List<SyncOperation> claimed = transactionTemplate.execute(status -> {
+            List<SyncOperation> ops = syncOperationRepository.claimOperations("PENDING", LocalDateTime.now(), max);
             LocalDateTime leaseExpiry = LocalDateTime.now().plusMinutes(leaseDurationMinutes);
             for (SyncOperation op : ops) {
                 op.setStatus("PROCESSING");
@@ -80,36 +157,39 @@ public class SyncWorker {
             }
             return ops;
         });
-
-        if (claimedOps != null && !claimedOps.isEmpty()) {
-            log.info("WORKER_CLAIMED: workerId={}, count={}", workerId, claimedOps.size());
-            for (SyncOperation op : claimedOps) {
-                processSingleOperation(op);
-            }
+        if (claimed == null) {
+            return List.of();
         }
+        if (!claimed.isEmpty()) {
+            log.info("WORKER_CLAIMED: workerId={}, count={}", workerId, claimed.size());
+        }
+        return claimed;
     }
 
     private void processSingleOperation(SyncOperation op) {
-        Thread workerThread = Thread.currentThread();
+        // Set when a heartbeat finds the lease gone; checked inside the fenced transactions below.
+        AtomicBoolean leaseLost = new AtomicBoolean(false);
         Runnable heartbeatTask = () -> {
             try {
                 LocalDateTime newExpiry = LocalDateTime.now().plusMinutes(leaseDurationMinutes);
                 int renewed = syncOperationRepository.renewLeaseConditionally(op.getId(), op.getLeaseToken(), newExpiry);
                 if (renewed == 0) {
                     log.error("WORKER_LEASE_LOST_DURING_HEARTBEAT: workerId={}, opId={}", workerId, op.getId());
-                    workerThread.interrupt();
-                    throw new RuntimeException("Lease lost"); // stops scheduled execution
+                    leaseLost.set(true);
                 }
             } catch (Exception e) {
                 log.error("Heartbeat error for opId={}", op.getId(), e);
             }
         };
 
-        long intervalMs = 60000; // 1 minute
-        java.util.concurrent.ScheduledFuture<?> heartbeatFuture = heartbeatExecutor.scheduleAtFixedRate(heartbeatTask, intervalMs, intervalMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        ScheduledFuture<?> heartbeatFuture = heartbeatScheduler.scheduleAtFixedRate(
+                heartbeatTask, Instant.now().plusMillis(heartbeatIntervalMs), Duration.ofMillis(heartbeatIntervalMs));
 
         try {
             Runnable leaseVerifier = () -> {
+                if (leaseLost.get()) {
+                    throw new IllegalStateException("Lease lost — cannot process operation " + op.getId());
+                }
                 syncOperationRepository.findByIdAndLeaseForUpdate(op.getId(), op.getLeaseToken())
                         .orElseThrow(() -> new IllegalStateException("Lease lost or expired — cannot process operation " + op.getId()));
             };
@@ -143,8 +223,7 @@ public class SyncWorker {
             log.error("WORKER_FAILED: workerId={}, opId={}", workerId, op.getId(), e);
             handleFailure(op, e);
         } finally {
-            heartbeatFuture.cancel(true);
-            Thread.interrupted(); // clear interrupted flag
+            heartbeatFuture.cancel(false);
         }
     }
 
@@ -309,7 +388,7 @@ public class SyncWorker {
     // INVARIANT 6: Stale worker cannot finalize after lease replaced.
     // ──────────────────────────────────────────────────────────────────────────
 
-    @Scheduled(fixedDelayString = "60000")
+    @Scheduled(fixedDelayString = "${app.sync.background-worker.recovery-interval-ms:60000}")
     public void recoverStaleOperations() {
         List<SyncOperation> staleOps = syncOperationRepository.findExpiredLeasedOperations(LocalDateTime.now());
         for (SyncOperation op : staleOps) {

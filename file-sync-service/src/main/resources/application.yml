@@ -72,7 +72,8 @@ app:
     session-cleanup-rate: ${SESSION_CLEANUP_RATE_MS:86400000}
     finalizing-recovery-rate: ${FINALIZING_RECOVERY_RATE_MS:3600000}
     background-worker:
-      fixed-delay-ms: ${WORKER_FIXED_DELAY_MS:10000}
+      fixed-delay-ms: ${WORKER_FIXED_DELAY_MS:2000}
+      threads: ${WORKER_THREADS:2}
       max-retries: ${WORKER_MAX_RETRIES:3}
       lease-duration-minutes: ${WORKER_LEASE_DURATION_MINUTES:10}
     gc:
