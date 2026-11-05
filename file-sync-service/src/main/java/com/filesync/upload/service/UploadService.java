@@ -72,6 +72,16 @@ public class UploadService {
     @Value("${app.upload.max-file-size:10737418240}") // Default 10GB
     private long maxFileSize;
 
+    /**
+     * Files up to this size are additionally verified against the client-declared whole-file SHA-256
+     * by re-reading their chunks. Larger files are not re-read: every chunk was already verified
+     * (SHA-256) at ingest, and the server checks chunk count, contiguity and total size, so re-reading
+     * gigabytes over the network at completion adds I/O but no extra protection for other users.
+     * The uploading client computed the file hash and downloading clients can re-verify it. 0 disables.
+     */
+    @Value("${app.upload.full-hash-verify-max-bytes:67108864}") // Default 64 MiB
+    private long fullHashVerifyMaxBytes;
+
     @Value("${app.upload.max-concurrent-sessions:5}")
     private int maxConcurrentSessions;
 
@@ -455,14 +465,14 @@ public class UploadService {
             throw new IllegalStateException("Candidate validation failed: " + e.getMessage(), e);
         }
 
-        // Full SHA-256 verification from storage (outside transaction)
+        // Full-file SHA-256 verification from storage for small files (outside transaction); see fullHashVerifyMaxBytes.
         if (manifest.expectedFileSize() == 0) {
             String emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
             if (!emptyHash.equalsIgnoreCase(manifest.expectedFileHash())) {
                 restoreFinalizingToUploading(sessionId, "Empty file hash mismatch");
                 throw new IllegalArgumentException("Full file hash mismatch");
             }
-        } else if (!validatedChunks.isEmpty()) {
+        } else if (!validatedChunks.isEmpty() && manifest.expectedFileSize() <= fullHashVerifyMaxBytes) {
             try {
                 MessageDigest digest = MessageDigest.getInstance("SHA-256");
                 long totalSize = 0;
