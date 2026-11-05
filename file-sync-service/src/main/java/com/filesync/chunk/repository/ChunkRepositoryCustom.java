@@ -1,25 +1,13 @@
 package com.filesync.chunk.repository;
 
 public interface ChunkRepositoryCustom {
-    /**
-     * Insert a chunk row with status=STAGING (if hash not already present).
-     *
-     * Deduplication contract:
-     *   - If hash already exists (STAGING, ACTIVE, or DELETING): returns 0, no-op
-     *   - If hash does not exist: inserts with status=STAGING, returns 1
-     *
-     * The caller is responsible for:
-     *   1. Calling storage-service to physically store the data
-     *   2. Transitioning STAGING → ACTIVE in the same transaction as UploadSessionChunk creation
-     *   3. If storage fails: leave row as STAGING (GC will clean it up after grace period)
-     *
-     * @return number of rows inserted (0 or 1)
-     */
-    int insertAsStaging(String hash, Long size, String storageKey);
 
     /**
-     * Legacy: Insert as ACTIVE directly (kept for backward compat in tests).
-     * Prefer insertAsStaging() + activateChunk() for production flow.
+     * Inserts a chunk row as STAGING, or refreshes {@code updated_at} of an existing STAGING row
+     * (so a retried upload is not mistaken for a stale one by the staging GC). Rows that are already
+     * ACTIVE or DELETING are left untouched.
+     *
+     * @return 1 if a row was inserted or refreshed, 0 if the chunk is already ACTIVE/DELETING
      */
-    int insertIfNotExists(String hash, Long size, String storageKey);
+    int insertAsStaging(String hash, Long size, String storageKey);
 }

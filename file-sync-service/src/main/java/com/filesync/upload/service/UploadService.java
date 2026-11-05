@@ -3,6 +3,7 @@ package com.filesync.upload.service;
 import com.filesync.chunk.entity.Chunk;
 import com.filesync.chunk.entity.ChunkStatus;
 import com.filesync.chunk.repository.ChunkRepository;
+import com.filesync.chunk.service.ChunkReferenceGuard;
 import com.filesync.chunking.ChunkingStrategyFactory;
 import com.filesync.client.StorageServiceClient;
 import com.filesync.client.dto.ChunkStorageResponse;
@@ -68,6 +69,7 @@ public class UploadService {
     private final TransactionTemplate transactionTemplate;
     private final CandidateValidator candidateValidator;
     private final ChunkingStrategyFactory chunkingStrategyFactory;
+    private final ChunkReferenceGuard chunkReferenceGuard;
 
     @Value("${app.sync.chunk-size:4194304}")
     private Long defaultChunkSize;
@@ -542,6 +544,9 @@ public class UploadService {
                 }
 
                 // Create FileVersion with chunking algorithm recorded
+                // Share-lock the chunks and require them ACTIVE before referencing them (see ChunkReferenceGuard).
+                chunkReferenceGuard.lockAndVerifyActive(chunksToCommit.stream().map(ValidChunk::chunkId).toList());
+
                 FileVersion newVersion = new FileVersion(
                         file, currentSession.getTargetVersion(),
                         currentSession.getExpectedFileHash(), currentSession.getExpectedFileSize(),
@@ -584,6 +589,9 @@ public class UploadService {
                 "OCC conflict: client base=" + occ.getClientBaseVersion()
                         + " server=" + occ.getServerCurrentVersion());
             throw occ;
+        } catch (com.filesync.common.exception.ConflictException unavailable) {
+            restoreFinalizingToUploading(sessionId, "Chunk unavailable: " + unavailable.getMessage());
+            throw unavailable;
         }
     }
 

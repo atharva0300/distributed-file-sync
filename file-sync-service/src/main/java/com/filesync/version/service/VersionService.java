@@ -24,6 +24,7 @@ public class VersionService {
     private final FileVersionRepository versionRepository;
     private final FileRepository fileRepository;
     private final DeviceRepository deviceRepository;
+    private final com.filesync.chunk.service.ChunkReferenceGuard chunkReferenceGuard;
 
     /**
      * Create a new version entity in PostgreSQL.
@@ -81,6 +82,10 @@ public class VersionService {
 
         FileVersion newVersion = new FileVersion(file, nextVersionNumber, targetVersion.getFileHash(), targetVersion.getFileSize(), device, "RESTORE_FROM_V" + versionNumber);
         newVersion = versionRepository.save(newVersion);
+
+        // Share-lock the chunks and require them ACTIVE before referencing them from the new version.
+        chunkReferenceGuard.lockAndVerifyActive(targetVersion.getChunks().stream()
+                .map(c -> c.getChunk().getId()).toList());
 
         // Copy chunks from targetVersion
         for (FileVersionChunk oldChunk : targetVersion.getChunks()) {

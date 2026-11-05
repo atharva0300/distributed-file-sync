@@ -17,18 +17,16 @@ import java.util.List;
 /**
  * Orphan chunk garbage collection.
  *
- * Lifecycle: ACTIVE → DELETING → [physical delete] → [DB delete]
+ * Lifecycle: ACTIVE|STAGING -> DELETING -> [physical delete] -> [DB row delete]
  *
- * Concurrency invariants:
- *   INVARIANT 1: A Chunk with an active UploadSessionChunk reference cannot be physically deleted.
- *   INVARIANT 2: A Chunk marked DELETING cannot receive a new upload-session reference.
- *
- * These invariants are enforced by locking the Chunk row FOR UPDATE in both GC and uploadChunk().
- *
- * Recovery for stuck DELETING chunks:
- *   - If physical delete succeeded but DB delete failed: re-check references, delete DB row
- *   - If physical delete failed: restore to ACTIVE for retry
- *   - If references appeared while DELETING: restore to ACTIVE (INVARIANT 1 was almost violated)
+ * Invariants:
+ *   1. A chunk referenced by a file version or an upload session is never physically deleted.
+ *      GC first takes an exclusive row lock, re-counts references under that lock and marks the chunk
+ *      DELETING in a committed transaction; reference creators either hold a lock on the chunk row
+ *      (uploadChunk / linkExistingChunk take FOR UPDATE, ChunkReferenceGuard takes FOR SHARE) or see
+ *      DELETING and refuse to reference it.
+ *   2. A chunk is never moved back to ACTIVE once deletion has begun, because its bytes may be gone.
+ *      A chunk whose physical delete failed stays DELETING and is retried by recoverStuckDeletingChunks.
  */
 @Slf4j
 @Service
@@ -42,188 +40,152 @@ public class OrphanChunkCleanupService {
     @Value("${app.sync.gc.batch-size:500}")
     private int batchSize;
 
-    /** Run every hour: clean orphan chunks */
-    @Scheduled(fixedDelay = 3600000)
-    public void cleanupOrphanChunks() {
-        LocalDateTime gracePeriod = LocalDateTime.now().minusHours(12);
-        List<Long> orphanIds = chunkRepository.findOrphanChunkIds(gracePeriod, batchSize);
+    /** Grace period before an unreferenced ACTIVE chunk is collected. */
+    @Value("${app.sync.gc.orphan-grace-hours:12}")
+    private long orphanGraceHours;
 
+    /** Grace period before an abandoned STAGING chunk is collected. */
+    @Value("${app.sync.gc.staging-grace-hours:1}")
+    private long stagingGraceHours;
+
+    /** A chunk may sit in DELETING this long before recovery takes over (covers an in-flight GC pass). */
+    @Value("${app.sync.gc.deleting-recovery-minutes:15}")
+    private long deletingRecoveryMinutes;
+
+    @Scheduled(fixedDelayString = "${app.sync.gc.orphan-interval-ms:3600000}")
+    public void cleanupOrphanChunks() {
+        LocalDateTime grace = LocalDateTime.now().minusHours(orphanGraceHours);
+        List<Long> orphanIds = chunkRepository.findOrphanChunkIds(grace, batchSize);
         if (orphanIds == null || orphanIds.isEmpty()) {
             return;
         }
-
         log.info("GC_CANDIDATE: foundCount={}", orphanIds.size());
-
         for (Long chunkId : orphanIds) {
-            processOrphanCandidate(chunkId);
+            collect(chunkId, ChunkStatus.ACTIVE, grace);
         }
     }
 
-    /**
-     * Run every 2 hours: recover chunks stuck in DELETING state.
-     * Handles the case where physical delete succeeded but DB cleanup failed (or vice versa).
-     */
-    @Scheduled(fixedDelay = 7200000)
-    public void recoverStuckDeletingChunks() {
-        LocalDateTime cutoff = LocalDateTime.now().minusHours(2);
-        List<Long> stuckIds = chunkRepository.findStuckDeletingChunkIds(cutoff, batchSize);
+    /** STAGING rows whose upload never finished (storage write or activation failed). */
+    @Scheduled(fixedDelayString = "${app.sync.gc.staging-interval-ms:3600000}")
+    public void cleanupStaleStagingChunks() {
+        LocalDateTime grace = LocalDateTime.now().minusHours(stagingGraceHours);
+        List<Long> stagingIds = chunkRepository.findStaleStagingChunkIds(grace, batchSize);
+        if (stagingIds == null || stagingIds.isEmpty()) {
+            return;
+        }
+        log.info("GC_STAGING_CLEANUP: foundCount={}", stagingIds.size());
+        for (Long chunkId : stagingIds) {
+            collect(chunkId, ChunkStatus.STAGING, grace);
+        }
+    }
 
+    /** Finishes deletions that were interrupted (crash, storage outage) while the chunk was DELETING. */
+    @Scheduled(fixedDelayString = "${app.sync.gc.deleting-recovery-interval-ms:600000}")
+    public void recoverStuckDeletingChunks() {
+        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(deletingRecoveryMinutes);
+        List<Long> stuckIds = chunkRepository.findStuckDeletingChunkIds(cutoff, batchSize);
         if (stuckIds == null || stuckIds.isEmpty()) {
             return;
         }
-
         log.info("GC_DELETING_RECOVERY: foundStuckCount={}", stuckIds.size());
-
         for (Long chunkId : stuckIds) {
             recoverStuckDeletingChunk(chunkId);
         }
     }
 
     /**
-     * Run every 1 hour: clean up stale STAGING chunks.
-     * These are chunks where the DB row was inserted but the storage upload failed,
-     * so they never transitioned to ACTIVE.
+     * Phase 1 (short tx): lock the row, re-verify state/age/references, mark DELETING.
+     * Phase 2 (no tx): delete the bytes from storage-service (idempotent).
+     * Phase 3 (short tx): delete the row if still DELETING and still unreferenced.
      */
-    @Scheduled(fixedDelay = 3600000)
-    public void cleanupStaleStagingChunks() {
-        // 1 hour grace period to allow ongoing uploads to complete
-        LocalDateTime gracePeriod = LocalDateTime.now().minusHours(1);
-        List<Long> stagingIds = chunkRepository.findStaleStagingChunkIds(gracePeriod, batchSize);
-
-        if (stagingIds == null || stagingIds.isEmpty()) {
-            return;
-        }
-
-        log.info("GC_STAGING_CLEANUP: foundCount={}", stagingIds.size());
-
-        for (Long chunkId : stagingIds) {
-            String hash = transactionTemplate.execute(status -> {
-                Chunk c = chunkRepository.findByIdForUpdate(chunkId).orElse(null);
-                return (c != null && c.getStatus() == ChunkStatus.STAGING) ? c.getHash() : null;
-            });
-
-            if (hash != null) {
-                try {
-                    storageClient.deleteChunk(hash);
-                } catch (Exception e) {
-                    log.warn("GC_STAGING_S3_DELETE_ERROR: hash={}, error={}", hash, e.getMessage());
-                }
-
-                transactionTemplate.executeWithoutResult(status -> {
-                    Chunk c = chunkRepository.findByIdForUpdate(chunkId).orElse(null);
-                    if (c != null && c.getStatus() == ChunkStatus.STAGING) {
-                        chunkRepository.delete(c);
-                        log.info("GC_STAGING_DELETED: chunkId={}", chunkId);
-                    }
-                });
-            }
-        }
-    }
-
-    private void processOrphanCandidate(Long chunkId) {
-        // Phase 1: Lock candidate, re-verify no references, mark DELETING
-        Chunk markedChunk = transactionTemplate.execute(status -> {
-            // Lock chunk FOR UPDATE — serializes against uploadChunk() creating references
-            Chunk c = chunkRepository.findByIdAndStatusForUpdate(chunkId, ChunkStatus.ACTIVE).orElse(null);
+    private void collect(Long chunkId, ChunkStatus expectedStatus, LocalDateTime grace) {
+        String hash = transactionTemplate.execute(status -> {
+            Chunk c = chunkRepository.findByIdAndStatusForUpdate(chunkId, expectedStatus).orElse(null);
             if (c == null) {
-                return null; // Already DELETING or deleted by another GC run
+                return null; // state changed since the candidate query
             }
-
-            // Re-check references under lock — INVARIANT 1
-            long fileRefs = chunkRepository.countFileVersionReferences(chunkId);
-            long sessionRefs = chunkRepository.countUploadSessionReferences(chunkId);
-
-            if (fileRefs > 0 || sessionRefs > 0) {
-                log.debug("GC_CANDIDATE_SKIPPED: chunkId={} has references (file={}, session={})",
-                        chunkId, fileRefs, sessionRefs);
-                return null; // Not an orphan
+            if (c.getUpdatedAt() != null && !c.getUpdatedAt().isBefore(grace)) {
+                return null; // touched again (e.g. a retried upload) — not stale any more
             }
-
-            // Mark DELETING and record when (for stuck-chunk recovery)
+            if (hasReferences(chunkId)) {
+                log.debug("GC_CANDIDATE_SKIPPED: chunkId={} is referenced", chunkId);
+                return null;
+            }
             chunkRepository.updateStatusWithDeletingAt(chunkId, ChunkStatus.DELETING, LocalDateTime.now());
-            c.setStatus(ChunkStatus.DELETING);
-            log.info("GC_MARKED_DELETING: chunkId={}, hash={}", chunkId, c.getHash());
-            return c;
+            log.info("GC_MARKED_DELETING: chunkId={}, hash={}, from={}", chunkId, c.getHash(), expectedStatus);
+            return c.getHash();
         });
-
-        if (markedChunk == null) {
+        if (hash == null) {
             return;
         }
 
-        // Phase 2: Physical delete outside transaction (no DB lock held)
-        boolean physicalDeleted = false;
         try {
-            storageClient.deleteChunk(markedChunk.getHash());
-            physicalDeleted = true;
-            log.info("GC_PHYSICAL_DELETE_SUCCESS: chunkId={}, hash={}", chunkId, markedChunk.getHash());
+            storageClient.deleteChunk(hash);
         } catch (Exception e) {
-            log.error("GC_PHYSICAL_DELETE_FAILED: chunkId={}, hash={}, reverting to ACTIVE",
-                    chunkId, markedChunk.getHash(), e);
-            // Restore to ACTIVE for retry in next GC cycle
-            transactionTemplate.executeWithoutResult(s -> {
-                chunkRepository.updateStatus(chunkId, ChunkStatus.ACTIVE);
-            });
+            // Stay DELETING; recoverStuckDeletingChunks retries. Never revert to ACTIVE: the bytes may be gone.
+            log.error("GC_PHYSICAL_DELETE_FAILED: chunkId={}, hash={} (left DELETING for retry)", chunkId, hash, e);
+            return;
         }
 
-        // Phase 3: DB cleanup after successful physical delete
-        if (physicalDeleted) {
-            transactionTemplate.executeWithoutResult(status -> {
-                // Re-lock and re-verify before deleting DB row
-                Chunk c = chunkRepository.findByIdForUpdate(chunkId).orElse(null);
-                if (c == null) {
-                    return; // Already deleted by another process
-                }
-                if (c.getStatus() != ChunkStatus.DELETING) {
-                    log.warn("GC_DB_DELETE_SKIP: chunkId={} status changed to {}", chunkId, c.getStatus());
-                    return;
-                }
-
-                // Final reference check — if references appeared, do NOT delete
-                long fileRefs = chunkRepository.countFileVersionReferences(chunkId);
-                long sessionRefs = chunkRepository.countUploadSessionReferences(chunkId);
-
-                if (fileRefs > 0 || sessionRefs > 0) {
-                    // References appeared while DELETING — physical object is already gone
-                    // This means INVARIANT 2 was violated (uploadChunk did not check DELETING properly)
-                    // Restore to ACTIVE: the upload will fail when reading the missing chunk
-                    log.error("GC_INVARIANT_VIOLATION: chunkId={} gained references while DELETING! Restoring ACTIVE.",
-                            chunkId);
-                    chunkRepository.updateStatus(chunkId, ChunkStatus.ACTIVE);
-                } else {
-                    chunkRepository.delete(c);
-                    log.info("GC_DB_DELETE_SUCCESS: chunkId={}", chunkId);
-                }
-            });
-        }
+        deleteRowIfUnreferenced(chunkId);
     }
 
     private void recoverStuckDeletingChunk(Long chunkId) {
+        String hash = transactionTemplate.execute(status -> {
+            Chunk c = chunkRepository.findByIdForUpdate(chunkId).orElse(null);
+            if (c == null || c.getStatus() != ChunkStatus.DELETING) {
+                return null;
+            }
+            if (hasReferences(chunkId)) {
+                // Should be impossible (see class javadoc). Only trust the chunk again if its bytes still exist.
+                boolean bytesExist;
+                try {
+                    bytesExist = storageClient.chunkExists(c.getHash());
+                } catch (Exception e) {
+                    log.error("GC_DELETING_RECOVERY_STORAGE_UNREACHABLE: chunkId={}", chunkId, e);
+                    return null;
+                }
+                if (bytesExist) {
+                    chunkRepository.updateStatus(chunkId, ChunkStatus.ACTIVE);
+                    log.warn("GC_DELETING_RECOVERY_RESTORED: chunkId={} is referenced and its bytes exist", chunkId);
+                } else {
+                    log.error("GC_INVARIANT_VIOLATION: chunkId={} hash={} is referenced but its bytes are gone; "
+                            + "left DELETING, manual repair needed", chunkId, c.getHash());
+                }
+                return null;
+            }
+            return c.getHash();
+        });
+        if (hash == null) {
+            return;
+        }
+        try {
+            storageClient.deleteChunk(hash); // idempotent
+        } catch (Exception e) {
+            log.warn("GC_DELETING_RECOVERY_STORAGE_ERROR: chunkId={}, will retry", chunkId, e);
+            return;
+        }
+        deleteRowIfUnreferenced(chunkId);
+    }
+
+    private void deleteRowIfUnreferenced(Long chunkId) {
         transactionTemplate.executeWithoutResult(status -> {
             Chunk c = chunkRepository.findByIdForUpdate(chunkId).orElse(null);
             if (c == null || c.getStatus() != ChunkStatus.DELETING) {
-                return; // Already recovered or deleted by concurrent run
-            }
-
-            // Check references first
-            long fileRefs = chunkRepository.countFileVersionReferences(chunkId);
-            long sessionRefs = chunkRepository.countUploadSessionReferences(chunkId);
-
-            if (fileRefs > 0 || sessionRefs > 0) {
-                // References appeared — restore to ACTIVE
-                chunkRepository.updateStatus(chunkId, ChunkStatus.ACTIVE);
-                log.warn("GC_DELETING_RECOVERY_RESTORED: chunkId={} has references, restored to ACTIVE", chunkId);
                 return;
             }
-
-            // No references: try to delete DB row
-            // Physical object may or may not exist — that's OK, storage service handles idempotent deletes
-            try {
-                storageClient.deleteChunk(c.getHash()); // idempotent — OK if already gone
-            } catch (Exception e) {
-                log.warn("GC_DELETING_RECOVERY_STORAGE_ERROR: chunkId={}, continuing with DB delete", chunkId, e);
+            if (hasReferences(chunkId)) {
+                log.error("GC_INVARIANT_VIOLATION: chunkId={} hash={} gained references while DELETING; "
+                        + "left DELETING, manual repair needed", chunkId, c.getHash());
+                return;
             }
             chunkRepository.delete(c);
-            log.info("GC_DELETING_RECOVERY_COMPLETED: chunkId={}", chunkId);
+            log.info("GC_DB_DELETE_SUCCESS: chunkId={}", chunkId);
         });
+    }
+
+    private boolean hasReferences(Long chunkId) {
+        return chunkRepository.countFileVersionReferences(chunkId) > 0
+                || chunkRepository.countUploadSessionReferences(chunkId) > 0;
     }
 }

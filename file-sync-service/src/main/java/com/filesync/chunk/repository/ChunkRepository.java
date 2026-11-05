@@ -89,6 +89,17 @@ public interface ChunkRepository extends JpaRepository<Chunk, Long>, ChunkReposi
     @Query("SELECT c FROM Chunk c WHERE c.id = :id AND c.status = :status")
     Optional<Chunk> findByIdAndStatusForUpdate(@Param("id") Long id, @Param("status") ChunkStatus status);
 
+    /**
+     * Takes a shared row lock (FOR SHARE) on the given chunks, in id order. Code that is about to
+     * create a {@code file_version_chunks} reference calls this inside the same transaction: GC needs
+     * an exclusive lock to mark a chunk DELETING, so it either waits for the referencing transaction
+     * to commit (and then sees the reference) or has already marked the chunk, which the caller
+     * detects by status.
+     */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("SELECT c FROM Chunk c WHERE c.id IN :ids ORDER BY c.id")
+    List<Chunk> findAllByIdForShare(@Param("ids") java.util.Collection<Long> ids);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT c FROM Chunk c WHERE c.id = :id")
     Optional<Chunk> findByIdForUpdate(@Param("id") Long id);
