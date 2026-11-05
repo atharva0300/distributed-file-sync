@@ -25,7 +25,7 @@ public final class HashUtil {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(data);
-            return bytesToHex(hash);
+            return java.util.HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException e) {
             throw new StorageException("SHA-256 algorithm not available", e);
         }
@@ -46,7 +46,7 @@ public final class HashUtil {
             while ((bytesRead = stream.read(buffer)) != -1) {
                 digest.update(buffer, 0, bytesRead);
             }
-            return bytesToHex(digest.digest());
+            return java.util.HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException e) {
             throw new StorageException("SHA-256 algorithm not available", e);
         } catch (IOException e) {
@@ -54,11 +54,4 @@ public final class HashUtil {
         }
     }
 
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b));
-        }
-        return sb.toString();
-    }
 }

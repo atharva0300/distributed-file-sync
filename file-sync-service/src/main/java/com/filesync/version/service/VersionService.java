@@ -26,26 +26,6 @@ public class VersionService {
     private final DeviceRepository deviceRepository;
     private final com.filesync.chunk.service.ChunkReferenceGuard chunkReferenceGuard;
 
-    /**
-     * Create a new version entity in PostgreSQL.
-     * Called after every successful file change or upload completion.
-     */
-    @Transactional
-    public FileVersion createVersion(FileEntry file, Device device, String changeType) {
-        FileVersion version = new FileVersion(
-                file,
-                file.getCurrentVersion(),
-                file.getFileHash(),
-                file.getFileSize(),
-                device,
-                changeType
-        );
-
-        FileVersion saved = versionRepository.save(version);
-        log.info("VERSION_CREATED: fileId={}, version={}, changeType={}", file.getId(), file.getCurrentVersion(), changeType);
-        return saved;
-    }
-
     /** List all versions for a file, newest first. */
     @Transactional(readOnly = true)
     public List<FileVersion> listVersions(Long fileId) {

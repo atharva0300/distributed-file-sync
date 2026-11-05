@@ -261,10 +261,6 @@ public class ContentDefinedChunkingStrategy implements ChunkingStrategy {
     }
 
     private static String digestToHex(byte[] digest) {
-        StringBuilder sb = new StringBuilder(64);
-        for (byte b : digest) {
-            sb.append(String.format("%02x", b));
-        }
-        return sb.toString();
+        return java.util.HexFormat.of().formatHex(digest);
     }
 }

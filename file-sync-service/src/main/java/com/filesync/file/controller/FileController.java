@@ -137,11 +137,7 @@ public class FileController {
                         
                         dis.transferTo(outputStream);
                         
-                        StringBuilder hexString = new StringBuilder();
-                        for (byte b : digest.digest()) {
-                            hexString.append(String.format("%02x", b));
-                        }
-                        String calculatedHash = hexString.toString();
+                        String calculatedHash = java.util.HexFormat.of().formatHex(digest.digest());
                         
                         if (!calculatedHash.equalsIgnoreCase(hash)) {
                             throw new IOException("Data corruption detected: chunk hash mismatch. Expected: " + hash + ", Got: " + calculatedHash);
