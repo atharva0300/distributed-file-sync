@@ -37,13 +37,6 @@ public class ChunkingStrategyFactory {
     }
 
     /**
-     * Returns the current chunking mode.
-     */
-    public ChunkingMode getMode() {
-        return properties.getMode();
-    }
-
-    /**
      * Returns the configured target/average chunk size.
      * For CDC: the average chunk size.
      */

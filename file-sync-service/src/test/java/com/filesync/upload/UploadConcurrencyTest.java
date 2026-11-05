@@ -1,5 +1,7 @@
 package com.filesync.upload;
 
+import static com.filesync.testsupport.UploadTestSupport.uploadSingleChunk;
+
 import com.filesync.auth.entity.User;
 import com.filesync.auth.repository.UserRepository;
 import com.filesync.chunk.repository.ChunkRepository;
@@ -100,7 +102,7 @@ class UploadConcurrencyTest {
     @Test
     void concurrentCompleteUpload_onlyOneVersionCreated() throws Exception {
         Long sessionId = uploadService.initUpload(userId, file.getId(), deviceId, 0, (long) data.length, hash).sessionId();
-        uploadService.uploadChunk(userId, sessionId, 0, hash, data);
+        uploadSingleChunk(uploadService, userId, file.getId(), sessionId, 0, hash, data);
 
         int threads = 4;
         CountDownLatch start = new CountDownLatch(1);
@@ -155,13 +157,13 @@ class UploadConcurrencyTest {
 
         // Session A (Device 1 at v0)
         Long sessionA = uploadService.initUpload(userId, file.getId(), deviceId, 0, (long) data.length, hash).sessionId();
-        uploadService.uploadChunk(userId, sessionA, 0, hash, data);
+        uploadSingleChunk(uploadService, userId, file.getId(), sessionA, 0, hash, data);
 
         // Session B (Device 2 at v0, same file)
         User user2 = userRepository.findById(userId).orElseThrow();
         Device device2 = deviceRepository.save(new Device(user2, "Device2", DeviceType.LAPTOP, "tok2-" + System.nanoTime()));
         Long sessionB = uploadService.initUpload(userId, file.getId(), device2.getId(), 0, (long) data2.length, hash2).sessionId();
-        uploadService.uploadChunk(userId, sessionB, 0, hash2, data2);
+        uploadSingleChunk(uploadService, userId, file.getId(), sessionB, 0, hash2, data2);
 
         CountDownLatch start = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(2);

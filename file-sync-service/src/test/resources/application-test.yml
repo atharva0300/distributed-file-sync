@@ -26,8 +26,7 @@ app:
       fixed-delay-ms: 60000
       max-retries: 3
   chunking:
-    mode: FIXED
-    min-size: 262144      # 256 KB
+    min-size: 1           # tests upload tiny chunks
     target-size: 1048576  # 1 MB
     max-size: 1048576     # 1 MB
   upload:

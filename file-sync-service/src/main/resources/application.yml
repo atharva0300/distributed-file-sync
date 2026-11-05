@@ -75,12 +75,10 @@ app:
 
   # ── Content-Defined Chunking (CDC) ───────────────────────────────────────────
   # mode: CDC uses Rabin fingerprint rolling hash for content-defined boundaries.
-  #       FIXED uses the legacy equal-size approach (kept for backward compatibility).
   # min-size:    minimum chunk size in bytes (CDC will not produce smaller chunks)
   # target-size: average/target chunk size; must be a power of two for CDC
   # max-size:    forced boundary if no content-defined boundary found within this many bytes
   chunking:
-    mode: ${CHUNKING_MODE:CDC}
     min-size: ${CHUNKING_MIN_SIZE:2097152}    # 2 MB
     target-size: ${CHUNKING_TARGET_SIZE:4194304}  # 4 MB  (must be power of 2)
     max-size: ${CHUNKING_MAX_SIZE:8388608}    # 8 MB

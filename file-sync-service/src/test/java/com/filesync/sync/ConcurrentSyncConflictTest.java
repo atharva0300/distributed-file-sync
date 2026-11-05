@@ -1,5 +1,7 @@
 package com.filesync.sync;
 
+import static com.filesync.testsupport.UploadTestSupport.uploadSingleChunk;
+
 import com.filesync.auth.dto.RegisterRequest;
 import com.filesync.auth.service.AuthService;
 import com.filesync.device.dto.CreateDeviceRequest;
@@ -106,8 +108,8 @@ class ConcurrentSyncConflictTest {
         byte[] chunkData = "original content version 1".getBytes();
         String chunkHash = HashUtil.sha256Hex(chunkData);
 
-        Long laptopSessionId = uploadService.initUpload(userId, fileId, laptopId, (long) chunkData.length, chunkHash).sessionId();
-        uploadService.uploadChunk(userId, laptopSessionId, 0, chunkHash, chunkData);
+        Long laptopSessionId = uploadService.initUpload(userId, fileId, laptopId, null, (long) chunkData.length, chunkHash).sessionId();
+        uploadSingleChunk(uploadService, userId, fileId, laptopSessionId, null, chunkHash, chunkData);
         uploadService.completeUpload(userId, laptopSessionId, null);
 
         // Verify initial state: v1
@@ -122,7 +124,7 @@ class ConcurrentSyncConflictTest {
         // Desktop creates an upload session (at this point, server is still at v1)
         Long desktopSessionId = uploadService.initUpload(userId, fileId, desktopId, 1,
                 (long) desktopEditData.length, desktopHash).sessionId();
-        uploadService.uploadChunk(userId, desktopSessionId, 0, desktopHash, desktopEditData);
+        uploadSingleChunk(uploadService, userId, fileId, desktopSessionId, 1, desktopHash, desktopEditData);
         // Desktop goes offline — does NOT complete the session yet
 
         // 3. Laptop reconnects first and advances file to v2 (server is now at v2)

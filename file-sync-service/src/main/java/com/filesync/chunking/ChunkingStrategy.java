@@ -32,9 +32,4 @@ public interface ChunkingStrategy {
      * @throws IOException if the stream cannot be read
      */
     List<ChunkBoundary> chunk(InputStream input, long totalSize) throws IOException;
-
-    /**
-     * Returns the {@link ChunkingMode} this strategy implements.
-     */
-    ChunkingMode mode();
 }

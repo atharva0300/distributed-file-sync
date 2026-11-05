@@ -113,11 +113,6 @@ public class ContentDefinedChunkingStrategy implements ChunkingStrategy {
 
     // ── ChunkingStrategy implementation ──────────────────────────────────────
 
-    @Override
-    public ChunkingMode mode() {
-        return ChunkingMode.CDC;
-    }
-
     /**
      * Divides the input stream into content-defined chunks.
      *

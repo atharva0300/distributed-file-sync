@@ -13,24 +13,17 @@ import org.springframework.stereotype.Component;
  * <pre>{@code
  * app:
  *   chunking:
- *     mode: CDC          # CDC (default: CDC)
  *     min-size: 2097152  # 2 MB minimum chunk size
  *     target-size: 4194304  # 4 MB average/target chunk size
  *     max-size: 8388608  # 8 MB maximum chunk size
  * }</pre>
  *
- * <p>For {@code CDC} mode, all three bounds are used.</p>
+ * <p>Content-defined chunking is the only supported algorithm.</p>
  */
 @Getter
 @Setter
 @ConfigurationProperties(prefix = "app.chunking")
 public class ChunkingProperties {
-
-    /**
-     * Chunking mode: {@code CDC} (content-defined).
-     * Default is {@code CDC}.
-     */
-    private ChunkingMode mode = ChunkingMode.CDC;
 
     /**
      * Minimum chunk size in bytes. CDC will not produce a chunk smaller than this

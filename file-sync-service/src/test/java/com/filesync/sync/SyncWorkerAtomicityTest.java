@@ -1,5 +1,7 @@
 package com.filesync.sync;
 
+import static com.filesync.testsupport.UploadTestSupport.uploadSingleChunk;
+
 import com.filesync.auth.dto.RegisterRequest;
 import com.filesync.auth.service.AuthService;
 import com.filesync.client.StorageServiceClient;
@@ -81,7 +83,7 @@ class SyncWorkerAtomicityTest {
         Mockito.doNothing().when(storageServiceClient).deleteChunk(any());
 
         Long sessionId = uploadService.initUpload(userId, fileId, deviceId, 0, (long) data.length, hash).sessionId();
-        uploadService.uploadChunk(userId, sessionId, 0, hash, data);
+        uploadSingleChunk(uploadService, userId, fileId, sessionId, 0, hash, data);
         uploadService.completeUpload(userId, sessionId, null);
 
         // Verify file is at v1

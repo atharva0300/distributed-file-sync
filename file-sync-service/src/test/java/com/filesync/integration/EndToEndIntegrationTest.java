@@ -1,5 +1,7 @@
 package com.filesync.integration;
 
+import static com.filesync.testsupport.UploadTestSupport.uploadSingleChunk;
+
 import com.filesync.chunk.repository.ChunkRepository;
 import com.filesync.chunk.service.OrphanChunkCleanupService;
 import com.filesync.conflict.entity.Conflict;
@@ -93,12 +95,12 @@ public class EndToEndIntegrationTest {
 
         // 3. DeviceA creates upload session at v0 (new file)
         Long sessionIdA = uploadService.initUpload(user.getId(), file.getId(), deviceA.getId(), 0, 1024L, realHash).sessionId();
-        uploadService.uploadChunk(user.getId(), sessionIdA, 0, realHash, data);
+        uploadSingleChunk(uploadService, user.getId(), file.getId(), sessionIdA, 0, realHash, data);
 
         // 4. DeviceB ALSO creates its own upload session at v0 (same starting point, file still at v0)
         //    DeviceB made its own edits but uses the same content for simplicity
         Long sessionIdB = uploadService.initUpload(user.getId(), file.getId(), deviceB.getId(), 0, 1024L, realHash).sessionId();
-        uploadService.uploadChunk(user.getId(), sessionIdB, 0, realHash, data);
+        uploadSingleChunk(uploadService, user.getId(), file.getId(), sessionIdB, 0, realHash, data);
         // DeviceB goes offline → does NOT complete session yet
 
         // 5. DeviceA completes upload → file advances to v1

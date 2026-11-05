@@ -121,7 +121,7 @@ public class UploadController {
     public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> getConfig(
             @org.springframework.beans.factory.annotation.Autowired com.filesync.chunking.ChunkingStrategyFactory factory) {
         return ResponseEntity.ok(ApiResponse.success(java.util.Map.of(
-                "chunkingMode", factory.getMode().name(),
+                "chunkingMode", "CDC",
                 "targetChunkSize", factory.getTargetSize(),
                 "minChunkSize", factory.getMinSize(),
                 "maxChunkSize", factory.getMaxSize(),

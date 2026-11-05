@@ -3,7 +3,6 @@ package com.filesync.upload.service;
 import com.filesync.chunk.entity.Chunk;
 import com.filesync.chunk.entity.ChunkStatus;
 import com.filesync.chunk.repository.ChunkRepository;
-import com.filesync.chunking.ChunkingMode;
 import com.filesync.chunking.ChunkingStrategyFactory;
 import com.filesync.client.StorageServiceClient;
 import com.filesync.client.dto.ChunkStorageResponse;
@@ -54,6 +53,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class UploadService {
 
+    /** Content-defined chunking is the only supported chunking algorithm. */
+    static final String CHUNKING_ALGORITHM = "CDC";
+
     private final UploadSessionRepository sessionRepository;
     private final UploadSessionChunkRepository sessionChunkRepository;
     private final ChunkRepository chunkRepository;
@@ -88,11 +90,6 @@ public class UploadService {
     // ──────────────────────────────────────────────────────────────────────────
 
     @Transactional
-    public UploadInitResponse initUpload(Long userId, Long fileId, Long deviceId, Long expectedSize, String expectedHash) {
-        return initUpload(userId, fileId, deviceId, null, expectedSize, expectedHash);
-    }
-
-    @Transactional
     public UploadInitResponse initUpload(Long userId, Long fileId, Long deviceId, Integer baseVersion, Long expectedSize, String expectedHash) {
         // Validate expectedSize >= 0 (zero-byte files are allowed)
         if (expectedSize == null || expectedSize < 0) {
@@ -124,9 +121,7 @@ public class UploadService {
             throw new com.filesync.common.exception.ConflictException("Maximum concurrent upload sessions (" + maxConcurrentSessions + ") exceeded.");
         }
 
-        // Determine the chunking algorithm and record it on the session
-        ChunkingMode mode = chunkingStrategyFactory.getMode();
-        String chunkingAlgorithm = mode.name(); // "FIXED" or "CDC"
+        String chunkingAlgorithm = CHUNKING_ALGORITHM;
 
         UploadSession session = new UploadSession(
                 file, device, baseVersion,
@@ -152,9 +147,8 @@ public class UploadService {
     //   4. Upload to storage-service (outside TX) — if this fails, chunk stays STAGING; GC cleans it
     //   5. Transition STAGING→ACTIVE + create UploadSessionChunk (inside TX, same transaction)
     //
-    // Chunk size validation (CDC-aware):
-    //   - FIXED sessions: non-final chunks must equal session.chunkSize exactly
-    //   - CDC sessions: each chunk must be in [minSize..maxSize]; total size validated at completeUpload
+    // Chunk size validation: each chunk must be in [minSize..maxSize] (the final chunk of
+    // the file may be smaller than minSize); total size is validated at completeUpload.
     // ──────────────────────────────────────────────────────────────────────────
 
     public void uploadChunk(Long userId, Long sessionId, int chunkIndex, String clientHash, byte[] data) {
@@ -187,9 +181,6 @@ public class UploadService {
                 throw new IllegalStateException("Session is expired");
             }
 
-            if (!"CDC".equalsIgnoreCase(s.getChunkingAlgorithm())) {
-                throw new IllegalStateException("Only CDC chunking is supported");
-            }
             long expectedSize = s.getExpectedFileSize();
             long sessionChunkSize = s.getChunkSize();
 
@@ -761,10 +752,6 @@ public class UploadService {
                 .map(UploadSessionChunk::getChunkIndex).toList();
 
         int expectedChunks;
-        if (!"CDC".equalsIgnoreCase(session.getChunkingAlgorithm())) {
-            throw new IllegalStateException("Only CDC chunking is supported");
-        }
-
         if (session.getTotalChunks() != null) {
             // CDC: use totalChunks recorded when delta was computed
             expectedChunks = session.getTotalChunks();

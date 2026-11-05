@@ -21,7 +21,7 @@ import java.util.List;
  *   - ConflictService (KEEP_LOCAL and CREATE_CONFLICT_COPY paths)
  *
  * Validates all invariants required before a FileVersion can be committed.
- * CDC vs FIXED mode enforces different rules on chunk counts and sizes.
+ * Chunk count comes from the manifest recorded by the delta step (CDC chunk boundaries are content-defined).
  */
 @Slf4j
 @Component
@@ -34,7 +34,6 @@ public class CandidateValidator {
         long expectedFileSize = session.getExpectedFileSize();
         String expectedHash = session.getExpectedFileHash();
         long chunkSize = session.getChunkSize();
-        boolean isCdc = "CDC".equalsIgnoreCase(session.getChunkingAlgorithm());
 
         // 1. expectedFileSize >= 0
         if (expectedFileSize < 0) {
@@ -60,15 +59,10 @@ public class CandidateValidator {
         }
 
         // 4. Expected chunk count
-        int expectedChunkCount;
-        if (isCdc) {
-            if (session.getTotalChunks() == null) {
-                throw new IllegalStateException("CDC session totalChunks is not set (delta was never computed)");
-            }
-            expectedChunkCount = session.getTotalChunks();
-        } else {
-            expectedChunkCount = (int) Math.ceil((double) expectedFileSize / chunkSize);
+        if (session.getTotalChunks() == null) {
+            throw new IllegalStateException("Session totalChunks is not set (delta was never computed)");
         }
+        int expectedChunkCount = session.getTotalChunks();
 
         if (sessionChunks.size() != expectedChunkCount) {
             throw new IllegalStateException(
@@ -96,26 +90,10 @@ public class CandidateValidator {
 
         for (int i = 0; i < sorted.size(); i++) {
             UploadSessionChunk sc = sorted.get(i);
-            boolean isFinal = (i == sorted.size() - 1);
 
-            // Chunk size rules depend on mode
-            if (!isCdc) {
-                long expectedChunkSize;
-                if (!isFinal) {
-                    expectedChunkSize = chunkSize;
-                } else {
-                    long remainder = expectedFileSize % chunkSize;
-                    expectedChunkSize = (remainder == 0) ? chunkSize : remainder;
-                }
-                if (sc.getChunkSize() != expectedChunkSize) {
-                    throw new IllegalStateException(
-                        "Fixed chunk " + i + " has size " + sc.getChunkSize() + " but expected " + expectedChunkSize);
-                }
-            } else {
-                // CDC: Just make sure it's > 0 (max size is checked during upload)
-                if (sc.getChunkSize() <= 0) {
-                    throw new IllegalStateException("CDC chunk " + i + " has invalid size " + sc.getChunkSize());
-                }
+            // Min/max bounds are enforced when the bytes are uploaded; here just sanity-check.
+            if (sc.getChunkSize() <= 0) {
+                throw new IllegalStateException("Chunk " + i + " has invalid size " + sc.getChunkSize());
             }
 
             totalSize += sc.getChunkSize();

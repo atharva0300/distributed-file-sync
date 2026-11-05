@@ -92,17 +92,6 @@ public class UploadSession {
         this.chunkingAlgorithm = chunkingAlgorithm != null ? chunkingAlgorithm : "CDC";
     }
 
-    /**
-     * Legacy constructor (defaults chunkingAlgorithm to "FIXED").
-     * Used by existing code paths that pre-date CDC.
-     */
-    public UploadSession(FileEntry file, Device device, Integer baseVersion, int targetVersion,
-                         Long expectedFileSize, String expectedFileHash, Long chunkSize,
-                         LocalDateTime expiresAt) {
-        this(file, device, baseVersion, targetVersion, expectedFileSize, expectedFileHash,
-                chunkSize, expiresAt, "CDC");
-    }
-
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
