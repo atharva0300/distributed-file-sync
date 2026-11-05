@@ -34,6 +34,8 @@ spring:
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
+      repositories:
+        enabled: false
 
   servlet:
     multipart:
@@ -46,6 +48,10 @@ spring:
 
 # Application configuration
 app:
+  notifications:
+    # local: events are pushed to this instance's SSE clients (single instance, no Redis needed).
+    # redis: events go through Redis pub/sub so every instance can serve every user's SSE connection.
+    backplane: ${NOTIFICATIONS_BACKPLANE:local}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   jwt:
@@ -62,7 +68,6 @@ app:
     api-key: ${INTERNAL_API_KEY}
 
   sync:
-    chunk-size: ${CHUNK_SIZE:4194304}
     session-expiry-rate: ${SESSION_EXPIRY_RATE_MS:300000}
     session-cleanup-rate: ${SESSION_CLEANUP_RATE_MS:86400000}
     finalizing-recovery-rate: ${FINALIZING_RECOVERY_RATE_MS:3600000}

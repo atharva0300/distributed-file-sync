@@ -5,7 +5,7 @@ import com.filesync.security.UserPrincipal;
 import com.filesync.sync.dto.QueueSyncOperationRequest;
 import com.filesync.sync.dto.SyncOperationResponse;
 import com.filesync.sync.service.SyncService;
-import com.filesync.websocket.SyncNotificationService;
+import com.filesync.notification.SyncNotificationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;

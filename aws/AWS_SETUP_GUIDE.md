@@ -197,10 +197,17 @@ DATABASE_URL=jdbc:postgresql://<YOUR_RDS_ENDPOINT>:5432/filesync
 DATABASE_USERNAME=filesync_admin
 DATABASE_PASSWORD=<YOUR_RDS_PASSWORD>
 
-JWT_SECRET=your_super_strong_random_jwt_secret_at_least_256_bits
+JWT_SECRET=<output of: openssl rand -hex 32>
 JWT_EXPIRATION_MS=86400000
+# Shared secret that authenticates file-sync-service to storage-service (required; both services read it)
+INTERNAL_API_KEY=<output of: openssl rand -hex 32>
 SERVER_PORT=8080
 ```
+
+No Redis is needed: this is a single-instance deployment, and sync notifications are delivered
+in-process (`NOTIFICATIONS_BACKPLANE` defaults to `local`). Only if you later run more than one
+file-sync-service instance, provision Redis (e.g. ElastiCache), set `NOTIFICATIONS_BACKPLANE=redis`
+and `SPRING_DATA_REDIS_HOST`.
 
 Ensure correct file permissions:
 ```bash

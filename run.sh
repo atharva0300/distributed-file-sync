@@ -52,29 +52,25 @@ fi
 chmod +x ./mvnw
 echo -e "  ✓ Maven wrapper ready"
 
-# Initialize .env if missing
+# Initialize .env if missing: secrets are generated per machine, never committed.
 if [ ! -f .env ]; then
-  if [ -f .env.example ]; then
-    echo -e "  ${YELLOW}! .env file missing. Generating from .env.example...${NC}"
-    cp .env.example .env
-  else
-    echo -e "  ${YELLOW}! Creating default .env file...${NC}"
-    cat << 'EOF' > .env
+  echo -e "  ${YELLOW}! .env file missing. Generating one with random secrets...${NC}"
+  rand_hex() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+  DB_PASS="$(rand_hex)"
+  cat << EOF > .env
 POSTGRES_DB=filesync
 POSTGRES_USER=filesync
-POSTGRES_PASSWORD=filesync_secret
+POSTGRES_PASSWORD=${DB_PASS}
 DATABASE_URL=jdbc:postgresql://localhost:5432/filesync
 DATABASE_USERNAME=filesync
-DATABASE_PASSWORD=filesync_secret
+DATABASE_PASSWORD=${DB_PASS}
 STORAGE_SERVICE_URL=http://localhost:8081
-JWT_SECRET=development_secret_key_that_is_at_least_256_bits_long_for_testing
+JWT_SECRET=$(rand_hex)
 JWT_EXPIRATION_MS=86400000
 STORAGE_TYPE=local
 STORAGE_PATH=./storage
-CHUNK_SIZE=4194304
-INTERNAL_API_KEY=dev-internal-key
+INTERNAL_API_KEY=$(rand_hex)
 EOF
-  fi
 fi
 
 # Load .env
@@ -104,13 +100,13 @@ for port in 5432 8080 8081 5173; do
   fi
 done
 
-# ── 3. Start PostgreSQL + Redis ───────────────────────────────────────────────
-echo -e "\n${BOLD}[3/5] Initializing PostgreSQL (Port 5432) and Redis (Port 6379)...${NC}"
+# ── 3. Start PostgreSQL ───────────────────────────────────────────────────────
+echo -e "\n${BOLD}[3/5] Initializing PostgreSQL (Port 5432)...${NC}"
 if docker info >/dev/null 2>&1; then
   if docker compose version >/dev/null 2>&1; then
-    docker compose up -d postgres redis
+    docker compose up -d postgres
   else
-    docker-compose up -d postgres redis
+    docker-compose up -d postgres
   fi
 
   echo -n "  Waiting for PostgreSQL database engine..."

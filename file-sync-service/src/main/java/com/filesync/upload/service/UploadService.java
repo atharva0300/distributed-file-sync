@@ -28,9 +28,8 @@ import com.filesync.version.repository.FileVersionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.filesync.websocket.SyncEvent;
+import org.springframework.context.ApplicationEventPublisher;
+import com.filesync.notification.SyncEvent;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -64,28 +63,17 @@ public class UploadService {
     private final FileRepository fileRepository;
     private final DeviceRepository deviceRepository;
     private final FileVersionRepository versionRepository;
-    private final StringRedisTemplate redisTemplate;
-    private final ObjectMapper objectMapper;
+    private final ApplicationEventPublisher eventPublisher;
     private final TransactionTemplate transactionTemplate;
     private final CandidateValidator candidateValidator;
     private final ChunkingStrategyFactory chunkingStrategyFactory;
     private final ChunkReferenceGuard chunkReferenceGuard;
-
-    @Value("${app.sync.chunk-size:4194304}")
-    private Long defaultChunkSize;
-
-    @Value("${app.sync.session-expiry-rate:300000}")
-    private long sessionExpiryRateMs;
 
     @Value("${app.upload.max-file-size:10737418240}") // Default 10GB
     private long maxFileSize;
 
     @Value("${app.upload.max-concurrent-sessions:5}")
     private int maxConcurrentSessions;
-
-    public Long getDefaultChunkSize() {
-        return defaultChunkSize;
-    }
 
     // ──────────────────────────────────────────────────────────────────────────
     // initUpload
@@ -576,12 +564,9 @@ public class UploadService {
                 log.info("UPLOAD_SESSION_COMPLETED: sessionId={}, fileId={}, version={}, algorithm={}",
                         sessionId, file.getId(), currentSession.getTargetVersion(), chunkingAlgorithm);
 
-                SyncEvent event = SyncEvent.fileUpdated(userId, file.getId(), file.getName(), file.getCurrentVersion());
-                try {
-                    redisTemplate.convertAndSend("sync-events", objectMapper.writeValueAsString(event));
-                } catch (Exception e) {
-                    log.error("Failed to publish Redis event", e);
-                }
+                // Delivered by SyncEventDispatcher only if this transaction commits.
+                eventPublisher.publishEvent(
+                        SyncEvent.fileUpdated(userId, file.getId(), file.getName(), file.getCurrentVersion()));
                 return newVersion;
             });
         } catch (SyncConflictException occ) {

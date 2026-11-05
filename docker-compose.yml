@@ -1,7 +1,10 @@
 services:
+  # Optional: only needed when running several file-sync-service instances
+  # (NOTIFICATIONS_BACKPLANE=redis). Start with: docker compose --profile redis up -d
   redis:
     image: redis:7-alpine
     container_name: filesync-redis
+    profiles: ["redis"]
     ports:
       - "6379:6379"
 
@@ -11,7 +14,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-filesync}
       POSTGRES_USER: ${POSTGRES_USER:-filesync}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-filesync_secret}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (run ./run.sh to generate one)}
     ports:
       - "5432:5432"
     volumes:
@@ -34,7 +37,7 @@ services:
     environment:
       - STORAGE_TYPE=${STORAGE_TYPE:-local}
       - STORAGE_PATH=/data/storage
-      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-dev-internal-key}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-filesync-chunks}
     volumes:
@@ -51,19 +54,15 @@ services:
     environment:
       - DATABASE_URL=jdbc:postgresql://postgres:5432/filesync
       - DATABASE_USERNAME=filesync
-      - DATABASE_PASSWORD=filesync_secret
-      - JWT_SECRET=this-is-a-very-secure-jwt-secret-that-must-be-at-least-32-chars-long
-      - SPRING_DATA_REDIS_HOST=redis
-      - SPRING_DATA_REDIS_PORT=6379
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - STORAGE_SERVICE_URL=http://storage-service:8081
-      - INTERNAL_API_KEY=${INTERNAL_API_KEY:-dev-internal-key}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY:?set INTERNAL_API_KEY in .env}
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
       storage-service:
         condition: service_started
 

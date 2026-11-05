@@ -23,7 +23,6 @@ app:
   internal:
     api-key: test-internal-key
   sync:
-    chunk-size: 1048576  # 1 MB for tests (legacy property)
     background-worker:
       fixed-delay-ms: 60000
       max-retries: 3

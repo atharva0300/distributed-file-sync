@@ -1,4 +1,4 @@
-package com.filesync.websocket;
+package com.filesync.notification;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -23,11 +23,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * plain-HTTP, auto-reconnecting) replaces what was previously a full
  * WebSocket/STOMP connection used in only one direction.
  *
- * <p>Redis pub/sub stays as the cross-instance backplane: {@code onMessage} is
- * invoked on every file-sync-service instance subscribed to the "sync-events"
- * channel, so a user's SSE connection is served correctly regardless of which
- * instance is handling {@link com.filesync.upload.service.UploadService} for
- * that request (this is what makes the design horizontally scalable).
+ * <p>With a single instance (the default) events are delivered directly by
+ * {@link SyncEventDispatcher}. With {@code app.notifications.backplane=redis} the dispatcher
+ * publishes to Redis instead and {@code onMessage} is invoked on every instance, so a user's SSE
+ * connection is served regardless of which instance committed the change.
  *
  * <p>Binary data is NEVER sent over this channel — only notification metadata.
  */
@@ -66,39 +65,20 @@ public class SyncNotificationService implements MessageListener {
         return emitter;
     }
 
-    public void notifyFileUpdated(Long userId, Long fileId, String fileName, int version) {
-        broadcast(userId, SyncEvent.fileUpdated(userId, fileId, fileName, version));
-    }
-
-    public void notifyFileDeleted(Long userId, Long fileId, String fileName) {
-        broadcast(userId, SyncEvent.fileDeleted(userId, fileId, fileName));
-    }
-
-    public void notifySyncStarted(Long userId, Long fileId, String fileName) {
-        broadcast(userId, SyncEvent.syncStarted(userId, fileId, fileName));
-    }
-
-    public void notifySyncCompleted(Long userId, Long fileId, String fileName, int version) {
-        broadcast(userId, SyncEvent.syncCompleted(userId, fileId, fileName, version));
-    }
-
-    public void notifyConflictDetected(Long userId, Long fileId, String fileName) {
-        broadcast(userId, SyncEvent.conflictDetected(userId, fileId, fileName));
-        log.info("CONFLICT_DETECTED notification sent: userId={}, fileId={}", userId, fileId);
-    }
-
     @Override
     public void onMessage(Message message, byte[] pattern) {
         try {
             String body = new String(message.getBody(), StandardCharsets.UTF_8);
             SyncEvent event = objectMapper.readValue(body, SyncEvent.class);
-            broadcast(event.userId(), event);
+            broadcast(event);
         } catch (Exception e) {
             log.error("Failed to process Redis message", e);
         }
     }
 
-    private void broadcast(Long userId, SyncEvent event) {
+    /** Pushes the event to every SSE connection of its user on this instance. */
+    public void broadcast(SyncEvent event) {
+        Long userId = event.userId();
         List<SseEmitter> emitters = emittersByUserId.get(userId);
         if (emitters == null || emitters.isEmpty()) {
             return;
