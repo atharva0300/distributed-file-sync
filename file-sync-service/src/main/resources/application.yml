@@ -67,6 +67,17 @@ app:
     # overrides it with a required (no-default) env var — see application-aws.yml.
     api-key: ${INTERNAL_API_KEY}
 
+  upload:
+    # Requests per minute per user. Chunk transfers, cheap "link existing chunk" calls and
+    # control/metadata calls are limited separately (see UploadRateLimitProperties).
+    rate-limit:
+      transfer:
+        per-minute: ${UPLOAD_RATE_TRANSFER_PER_MIN:600}
+      link:
+        per-minute: ${UPLOAD_RATE_LINK_PER_MIN:3000}
+      control:
+        per-minute: ${UPLOAD_RATE_CONTROL_PER_MIN:300}
+
   sync:
     session-expiry-rate: ${SESSION_EXPIRY_RATE_MS:300000}
     session-cleanup-rate: ${SESSION_CLEANUP_RATE_MS:86400000}

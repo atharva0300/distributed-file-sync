@@ -68,15 +68,6 @@ public class UploadController {
         return ResponseEntity.ok(ApiResponse.success(null));
     }
 
-    @PostMapping("/{sessionId}/complete")
-    @Operation(summary = "Complete an upload session")
-    public ResponseEntity<ApiResponse<Void>> completeUpload(
-            @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long sessionId) {
-        uploadService.completeUpload(principal.getId(), sessionId, null);
-        return ResponseEntity.ok(ApiResponse.success(null));
-    }
-
     @GetMapping("/{sessionId}")
     @Operation(summary = "Get upload session status")
     public ResponseEntity<ApiResponse<com.filesync.upload.dto.UploadSessionResponse>> getSession(

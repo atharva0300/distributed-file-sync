@@ -117,9 +117,11 @@ public class SyncService {
     }
 
     @Transactional(readOnly = true)
-    public Page<SyncOperationResponse> getPendingOperations(Long userId, Pageable pageable) {
-        return operationRepository.findByUserIdAndStatus(userId, "PENDING", pageable)
-                .map(SyncOperationResponse::from);
+    public SyncOperationResponse getOperation(Long userId, Long operationId) {
+        return operationRepository.findById(operationId)
+                .filter(op -> op.getUser().getId().equals(userId))
+                .map(SyncOperationResponse::from)
+                .orElseThrow(() -> new NotFoundException("Operation not found: " + operationId));
     }
 
     @Transactional(readOnly = true)

@@ -58,11 +58,16 @@ public class SyncController {
             @RequestParam(required = false) String status,
             @PageableDefault(size = 20) Pageable pageable) {
 
-        Page<SyncOperationResponse> ops = (status != null && !status.isBlank())
-                ? syncService.getOperationsByStatus(principal.getId(), status, pageable)
-                : syncService.getOperationsByStatus(principal.getId(), null, pageable);
+        return ResponseEntity.ok(ApiResponse.success(
+                syncService.getOperationsByStatus(principal.getId(), status, pageable)));
+    }
 
-        return ResponseEntity.ok(ApiResponse.success(ops));
+    @GetMapping("/operations/{id}")
+    @Operation(summary = "Get one sync operation (poll this after queuing an UPLOAD to learn its outcome)")
+    public ResponseEntity<ApiResponse<SyncOperationResponse>> getOperation(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success(syncService.getOperation(principal.getId(), id)));
     }
 
 }

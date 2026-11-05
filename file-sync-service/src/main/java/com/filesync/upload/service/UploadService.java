@@ -445,7 +445,6 @@ public class UploadService {
         // ── Phase B: Validate candidate chunks + verify full hash (outside TX) ─
         List<UploadSessionChunk> sessionChunks = sessionChunkRepository
                 .findByUploadSessionIdOrderByChunkIndexAsc(sessionId);
-        log.info("DEBUG: completeUpload found {} sessionChunks for sessionId={}", sessionChunks.size(), sessionId);
         UploadSession sessionForValidation = sessionRepository.findById(sessionId).orElseThrow();
 
         record ValidChunk(long chunkId, String chunkHash, int chunkIndex, long chunkSize) {}

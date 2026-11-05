@@ -8,7 +8,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties(ChunkingProperties.class)
+@EnableConfigurationProperties({ChunkingProperties.class, com.filesync.config.UploadRateLimitProperties.class})
 public class FileSyncApplication {
 
     public static void main(String[] args) {
