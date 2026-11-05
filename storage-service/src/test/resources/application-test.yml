@@ -6,6 +6,8 @@ spring:
     name: storage-service-test
 
 app:
+  internal:
+    api-key: test-internal-key
   storage:
     type: local
     path: ./target/test-storage
@@ -13,4 +15,3 @@ app:
 logging:
   level:
     com.filesync.storage: INFO
-

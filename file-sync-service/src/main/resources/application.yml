@@ -59,7 +59,7 @@ app:
     # Shared HMAC secret with storage-service (see StorageServiceClient / that service's
     # InternalAuthFilter). This dev fallback is only safe for local/dev; the aws profile
     # overrides it with a required (no-default) env var — see application-aws.yml.
-    api-key: ${INTERNAL_API_KEY:dev-internal-key}
+    api-key: ${INTERNAL_API_KEY}
 
   sync:
     chunk-size: ${CHUNK_SIZE:4194304}

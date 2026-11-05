@@ -24,8 +24,9 @@ public class StorageServiceClient {
 
     public StorageServiceClient(
             @Value("${app.storage-service.url:http://localhost:8081}") String storageServiceUrl,
-            @Value("${app.internal.api-key:dev-internal-key}") String apiKey) {
+            @Value("${app.internal.api-key}") String apiKey) {
         this.baseUrl = storageServiceUrl;
+        InternalRequestSigner signer = new InternalRequestSigner(apiKey);
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofSeconds(5));
         requestFactory.setReadTimeout(Duration.ofSeconds(15));
@@ -34,45 +35,17 @@ public class StorageServiceClient {
                 .baseUrl(storageServiceUrl)
                 .requestFactory(requestFactory)
                 .requestInterceptor((request, body, execution) -> {
-                    long timestamp = System.currentTimeMillis();
-                    String serviceId = "file-sync-service";
-                    String payload = serviceId + ":" + timestamp;
-                    String signature = computeHmacSha256(payload, apiKey);
-                    
-                    request.getHeaders().add("X-Service-Id", serviceId);
-                    request.getHeaders().add("X-Timestamp", String.valueOf(timestamp));
-                    request.getHeaders().add("X-Signature", signature);
+                    var signed = signer.sign(request.getMethod().name(),
+                            request.getURI().getRawPath(), request.getURI().getRawQuery(), body);
+                    request.getHeaders().set("X-Service-Id", signed.serviceId());
+                    request.getHeaders().set("X-Timestamp", String.valueOf(signed.timestamp()));
+                    request.getHeaders().set("X-Nonce", signed.nonce());
+                    request.getHeaders().set("X-Content-SHA256", signed.bodySha256());
+                    request.getHeaders().set("X-Signature", signed.signature());
                     return execution.execute(request, body);
                 })
                 .build();
         log.info("Initialized StorageServiceClient targeting: {} with HMAC auth", storageServiceUrl);
-    }
-
-    private String computeHmacSha256(String data, String key) {
-        try {
-            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
-            javax.crypto.spec.SecretKeySpec secretKeySpec = new javax.crypto.spec.SecretKeySpec(key.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256");
-            mac.init(secretKeySpec);
-            byte[] hash = mac.doFinal(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return java.util.Base64.getEncoder().encodeToString(hash);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to compute HMAC-SHA256", e);
-        }
-    }
-
-    public ChunkStorageResponse storeChunk(String hash, InputStream stream, long size) {
-        try {
-            return restClient.post()
-                    .uri("/internal/chunks/{hash}", hash)
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .contentLength(size)
-                    .body(new org.springframework.core.io.InputStreamResource(stream))
-                    .retrieve()
-                    .body(ChunkStorageResponse.class);
-        } catch (Exception e) {
-            log.error("Failed to store streaming chunk {} in storage-service: {}", hash, e.getMessage());
-            throw new StorageException("Storage Service error storing streaming chunk: " + hash, e);
-        }
     }
 
     public ChunkStorageResponse storeChunk(String hash, byte[] data) {

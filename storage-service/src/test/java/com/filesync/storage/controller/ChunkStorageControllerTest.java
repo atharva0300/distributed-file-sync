@@ -1,5 +1,6 @@
 package com.filesync.storage.controller;
 
+import com.filesync.storage.config.InternalSignature;
 import com.filesync.storage.service.FileStorageService;
 import com.filesync.storage.util.HashUtil;
 import org.junit.jupiter.api.DisplayName;
@@ -29,25 +30,54 @@ class ChunkStorageControllerTest {
     @Autowired
     private FileStorageService storageService;
 
+    private static final java.util.concurrent.atomic.AtomicLong NONCE = new java.util.concurrent.atomic.AtomicLong();
+
+    /** Signs the request at build time (after content is set), declaring the hash a real client would. */
     private <T extends org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder> T withAuth(T builder) {
-        long timestamp = System.currentTimeMillis();
-        String serviceId = "file-sync-service";
-        String payload = serviceId + ":" + timestamp;
-        
-        try {
-            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
-            javax.crypto.spec.SecretKeySpec secretKeySpec = new javax.crypto.spec.SecretKeySpec("dev-internal-key".getBytes(StandardCharsets.UTF_8), "HmacSHA256");
-            mac.init(secretKeySpec);
-            byte[] hashBytes = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));
-            String signature = java.util.Base64.getEncoder().encodeToString(hashBytes);
-            
-            builder.header("X-Service-Id", serviceId)
-                   .header("X-Timestamp", String.valueOf(timestamp))
-                   .header("X-Signature", signature);
-            return builder;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        builder.with(request -> {
+            String uri = request.getRequestURI();
+            String bodyHash = ("POST".equals(request.getMethod()) && uri.startsWith("/internal/chunks/"))
+                    ? uri.substring("/internal/chunks/".length())
+                    : InternalSignature.EMPTY_BODY_SHA256;
+            long ts = System.currentTimeMillis();
+            String nonce = String.format("%016x%016x", ts, NONCE.incrementAndGet());
+            String sig = InternalSignature.sign("test-internal-key", InternalSignature.canonical(
+                    "file-sync-service", request.getMethod(), uri, request.getQueryString(), ts, nonce, bodyHash));
+            request.addHeader("X-Service-Id", "file-sync-service");
+            request.addHeader("X-Timestamp", String.valueOf(ts));
+            request.addHeader("X-Nonce", nonce);
+            request.addHeader("X-Content-SHA256", bodyHash);
+            request.addHeader("X-Signature", sig);
+            return request;
+        });
+        return builder;
+    }
+
+    @Test
+    @DisplayName("unsigned requests are rejected")
+    void testUnsignedRejected() throws Exception {
+        mockMvc.perform(get("/internal/chunks/{hash}/exists", "0".repeat(64)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("a bad upload under an existing hash is rejected and the stored chunk survives")
+    void testExistingChunkSurvivesBadUpload() throws Exception {
+        byte[] content = "valid stored content".getBytes(StandardCharsets.UTF_8);
+        String hash = HashUtil.sha256Hex(content);
+
+        mockMvc.perform(withAuth(post("/internal/chunks/{hash}", hash))
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM).content(content))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(withAuth(post("/internal/chunks/{hash}", hash))
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .content("garbage that is not the chunk".getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isBadRequest());
+
+        mockMvc.perform(withAuth(get("/internal/chunks/{hash}", hash)))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(content));
     }
 
     @Test
