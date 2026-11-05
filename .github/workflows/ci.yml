@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sources-tracked:
+    # Guards against a service existing only on a developer's machine (e.g. storage-service
+    # sources ignored by a stray .gitignore rule, which the build then silently misses).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required sources are tracked by Git
+        run: |
+          for path in \
+            storage-service/pom.xml \
+            storage-service/src/main/java/com/filesync/storage/StorageServiceApplication.java \
+            storage-service/src/main/java/com/filesync/storage/config/InternalAuthFilter.java \
+            storage-service/src/main/java/com/filesync/storage/service/LocalFileStorageService.java \
+            storage-service/src/main/java/com/filesync/storage/service/S3FileStorageService.java \
+            file-sync-service/pom.xml; do
+            git ls-files --error-unmatch "$path" >/dev/null || { echo "::error::$path is not tracked by Git"; exit 1; }
+          done
+          count=$(git ls-files 'storage-service/src/main/**.java' | wc -l)
+          [ "$count" -ge 5 ] || { echo "::error::storage-service has only $count tracked Java sources"; exit 1; }
+          if git check-ignore -q storage-service/src/main/java/com/filesync/storage/StorageServiceApplication.java; then
+            echo "::error::storage-service sources match a .gitignore rule"; exit 1
+          fi
+
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test -d testdb"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/testdb
+      SPRING_DATASOURCE_USERNAME: test
+      SPRING_DATASOURCE_PASSWORD: test
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Compile, test and package both services
+        run: mvn -B -ntp verify
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build

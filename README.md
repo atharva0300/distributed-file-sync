@@ -94,9 +94,9 @@ the one chunk it lands in — every chunk before and after it still hashes ident
 sync still finds and skips them.
 
 - **Server-side** (`ContentDefinedChunkingStrategy`, Java) is the source of truth: it decides
-  chunk boundaries during `completeUpload` validation and cross-checks the client's manifest.
+  chunk boundaries when the queued upload is finalised and cross-checks the client's manifest.
 - **Client-side** (`frontend/src/lib/cdc.ts`, TypeScript) runs the identical algorithm (same
-  polynomial, same window size, same 64-bit overflow semantics via BigInt) so the browser can
+  polynomial, same window size; it uses 32-bit integer math, which yields identical boundaries because the mask only reads the low bits) in a Web Worker, streaming the file so memory stays flat, so the browser can
   compute the same boundaries and hashes the server will expect, without a round trip per chunk.
 - Delta identity is by **chunk hash**, not chunk index: the client sends its full chunk-hash
   manifest to `POST /upload/delta`, and the server returns the hashes it doesn't already have.
@@ -134,8 +134,9 @@ sequenceDiagram
         FSS->>FSS: Verify the chunk is actually ACTIVE with matching size (never trust the client's say-so)
     end
 
-    Client->>FSS: POST /api/upload/{sessionId}/complete
-    FSS->>DB: Create file_version, link all chunks, bump files.current_version
+    Client->>FSS: POST /api/sync/operations (UPLOAD, stable clientOperationId)
+    FSS->>DB: Worker verifies, creates file_version, links all chunks, bumps files.current_version
+    Client->>FSS: GET /api/sync/operations/{id} (poll until COMPLETED / CONFLICT / FAILED)
     FSS-->>Client: SSE push: FILE_UPDATED
 ```
 
@@ -171,7 +172,7 @@ The server needs to tell connected clients "a file changed, go re-fetch it" — 
 notification. The client never sends anything back over this channel. That is a Server-Sent
 Events use case, not a WebSocket one: SSE is plain HTTP, reconnects automatically, and needs no
 separate protocol (STOMP) or fallback transport (SockJS) to get there. `GET /api/sync/events`
-is a long-lived SSE stream per connected user; `file-sync-service` still publishes events to a
+is a long-lived SSE stream per connected user (the browser reads it with `fetch` and an `Authorization` header, so the JWT never appears in a URL); `file-sync-service` still publishes events to a
 Redis pub/sub channel first; the SSE layer just subscribes to Redis and fans out to that user's
 connected emitters. Redis stays as the cross-instance backplane — whichever instance handled
 the write that produced the event, every instance holding that user's SSE connection still
@@ -233,8 +234,15 @@ cd frontend && npm install && npm run dev       # Terminal 4
 ```
 
 - Web dashboard: `http://localhost:5173`
-- API & Swagger: `http://localhost:8080/swagger-ui.html`
+- API & Swagger (only with `SWAGGER_ENABLED=true`): `http://localhost:8080/swagger-ui.html`
+- Health probes: `http://localhost:8080/actuator/health/readiness` (metrics at `/actuator/metrics` need a JWT)
 - Storage service health: `http://localhost:8081/internal/health`
+
+Secrets are never defaulted: `DATABASE_PASSWORD`, `JWT_SECRET` and `INTERNAL_API_KEY` must be set
+(`./run.sh` generates a `.env`). Chunking correctness across languages is pinned by shared golden
+vectors in `testdata/cdc-golden.json`, asserted by both the Java and TypeScript test suites; CI
+(`.github/workflows/ci.yml`) runs the backend suite against PostgreSQL, the frontend tests and build,
+and a check that all service sources are tracked by Git.
 
 ## 12. Repository Structure
 
