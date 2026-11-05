@@ -8,7 +8,7 @@ spring:
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/filesync}
     username: ${DATABASE_USERNAME:filesync}
-    password: ${DATABASE_PASSWORD:filesync_secret}
+    password: ${DATABASE_PASSWORD}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
@@ -55,7 +55,7 @@ app:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
   jwt:
-    secret: ${JWT_SECRET:default-dev-secret-please-change-in-production-at-least-256-bits}
+    secret: ${JWT_SECRET}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 
   storage-service:

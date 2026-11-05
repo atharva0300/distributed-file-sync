@@ -20,7 +20,7 @@ public class JwtTokenProvider {
     public JwtTokenProvider(
             @Value("${app.jwt.secret}") String secret,
             @Value("${app.jwt.expiration-ms}") long expirationMs) {
-        if (secret == null || secret.length() < 32 || "default-dev-secret-please-change-in-production-at-least-256-bits".equals(secret)) {
+        if (secret == null || secret.length() < 32) {
             throw new IllegalStateException("INSECURE CONFIGURATION: You must provide a secure app.jwt.secret of at least 32 characters.");
         }
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
