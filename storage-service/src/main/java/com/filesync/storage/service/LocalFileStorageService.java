@@ -2,6 +2,7 @@ package com.filesync.storage.service;
 
 import com.filesync.storage.exception.StorageException;
 import com.filesync.storage.util.HashUtil;
+import com.filesync.storage.util.VerifiedSpool;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -34,31 +35,33 @@ public class LocalFileStorageService implements FileStorageService {
         try {
             Files.createDirectories(chunkPath.getParent());
 
-            if (Files.exists(chunkPath)) {
+            if (Files.isRegularFile(chunkPath)) {
+                // Already stored: still verify what was sent, but never touch the stored object.
+                VerifiedSpool.verifyOnly(stream, chunkHash, contentLength);
                 return relativize(chunkPath);
             }
 
+            // Write to a temp file in the same directory (same filesystem => atomic rename),
+            // verify, and only then publish under the content-addressed name.
             Path tempPath = Files.createTempFile(chunkPath.getParent(), chunkHash, ".tmp");
             try {
-                Files.copy(stream, tempPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                VerifiedSpool.spoolAndVerify(stream, tempPath, chunkHash, contentLength);
                 Files.move(tempPath, chunkPath, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-                log.debug("Stored streaming chunk atomically: hash={}, path={}, size={}", chunkHash, chunkPath, contentLength);
-            } catch (java.nio.file.FileAlreadyExistsException e) {
-                log.debug("Chunk already exists (race condition handled safely): {}", chunkHash);
+                log.debug("Stored chunk atomically: hash={}, size={}", chunkHash, contentLength);
             } finally {
                 Files.deleteIfExists(tempPath);
             }
 
             return relativize(chunkPath);
         } catch (IOException e) {
-            throw new StorageException("Failed to store streaming chunk: " + chunkHash, e);
+            throw new StorageException("Failed to store chunk: " + chunkHash, e);
         }
     }
 
     @Override
     public boolean chunkExists(String chunkHash) {
         HashUtil.validateHash(chunkHash);
-        return Files.exists(resolveChunkPath(chunkHash));
+        return Files.isRegularFile(resolveChunkPath(chunkHash));
     }
 
     @Override
@@ -66,7 +69,7 @@ public class LocalFileStorageService implements FileStorageService {
         HashUtil.validateHash(chunkHash);
         Path chunkPath = resolveChunkPath(chunkHash);
 
-        if (!Files.exists(chunkPath)) {
+        if (!Files.isRegularFile(chunkPath)) {
             throw new StorageException("Chunk not found: " + chunkHash);
         }
 

@@ -44,48 +44,11 @@ public class ChunkStorageController {
             throw new IllegalArgumentException("Content-Length must be provided and > 0 for streaming");
         }
 
-        java.security.MessageDigest digest;
-        try {
-            digest = java.security.MessageDigest.getInstance("SHA-256");
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new RuntimeException("SHA-256 not available", e);
-        }
+        // Hash/length verification and atomic publication happen inside the storage service;
+        // nothing is stored under the final key unless the bytes match {hash}.
+        String storageKey = storageService.storeChunk(hash, request.getInputStream(), contentLength);
 
-        try (java.security.DigestInputStream dis = new java.security.DigestInputStream(request.getInputStream(), digest)) {
-            // Stream directly to storage service (S3/local)
-            String storageKey = storageService.storeChunk(hash, dis, contentLength);
-            
-            // Drain any remaining bytes to ensure the full stream is hashed
-            // (e.g. if storage service skipped storing because chunk already exists)
-            dis.transferTo(java.io.OutputStream.nullOutputStream());
-            
-            // Verify hash after stream is consumed
-            byte[] calculatedHashBytes = digest.digest();
-            StringBuilder hexString = new StringBuilder();
-            for (byte b : calculatedHashBytes) {
-                hexString.append(String.format("%02x", b));
-            }
-            String calculatedHash = hexString.toString();
-
-            if (!calculatedHash.equalsIgnoreCase(hash)) {
-                // Hash mismatch after streaming -> clean up the invalid chunk
-                try {
-                    storageService.deleteChunk(hash);
-                } catch (Exception e) {
-                    log.error("Failed to cleanup invalid chunk after hash mismatch: {}", hash, e);
-                }
-                throw new IllegalArgumentException("SHA-256 hash mismatch. Expected: " + hash + ", Calculated: " + calculatedHash);
-            }
-
-            ChunkStorageResponse response = new ChunkStorageResponse(
-                    hash,
-                    storageKey,
-                    false, // Deduplication check removed; we always put and it's idempotent
-                    contentLength
-            );
-
-            return ResponseEntity.ok(response);
-        }
+        return ResponseEntity.ok(new ChunkStorageResponse(hash, storageKey, false, contentLength));
     }
 
     @GetMapping("/chunks/{hash}/exists")
