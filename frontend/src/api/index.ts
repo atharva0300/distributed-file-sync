@@ -31,15 +31,9 @@ export const filesApi = {
     api.post<ApiResponse<FileResponse>>('/files/folder', { name, parentFolderId }),
   initUpload: (fileName: string, fileSize: number, parentFolderId?: number) =>
     api.post<ApiResponse<FileResponse>>('/files/upload/init', { fileName, fileSize, parentFolderId }),
-  finalizeUpload: (fileId: number, fileHash: string, totalChunks: number, deviceId: number, deviceName: string) =>
-    api.post<ApiResponse<void>>(
-      `/files/${fileId}/upload/complete?deviceId=${deviceId}&deviceName=${encodeURIComponent(deviceName)}`,
-      { fileHash, totalChunks }
-    ),
   delete: (id: number) => api.delete<ApiResponse<void>>(`/files/${id}`),
   rename: (fileId: number, newName: string) =>
     api.post<ApiResponse<FileResponse>>('/files/rename', { fileId, newName }),
-  download: (id: number) => api.get(`/files/${id}/download`, { responseType: 'blob' }),
   getVersions: (id: number) => api.get<ApiResponse<FileVersion[]>>(`/files/${id}/versions`),
   restoreVersion: (id: number, versionNumber: number, deviceId: number) =>
     api.post<ApiResponse<FileVersion>>(`/files/${id}/restore/${versionNumber}?deviceId=${deviceId}`),
@@ -76,8 +70,6 @@ export const uploadApi = {
   // it never trusts a bare client-asserted hash/size.
   linkExistingChunk: (sessionId: number, chunkIndex: number, clientHash: string, size: number) =>
     api.post<ApiResponse<void>>(`/upload/${sessionId}/chunks/${chunkIndex}/link?clientHash=${encodeURIComponent(clientHash)}&size=${size}`),
-  completeUpload: (sessionId: number) =>
-    api.post<ApiResponse<void>>(`/upload/${sessionId}/complete`),
   // CDC delta identity is by chunk hash, not index — the server returns the list
   // of hashes it doesn't have yet. sessionId is required: it's how the server
   // records totalChunks on the session (completeUpload needs it for CDC).
@@ -114,8 +106,8 @@ export const syncApi = {
       clientOperationId,
       uploadSessionId,
     }),
+  getOperation: (id: number) => api.get<ApiResponse<SyncOperationResponse>>(`/sync/operations/${id}`),
   getLogs: () => api.get<ApiResponse<SyncLogResponse[]>>('/sync/logs'),
-  getLogsForFile: (fileId: number) => api.get<ApiResponse<SyncLogResponse[]>>(`/sync/logs/file/${fileId}`),
 };
 
 // ── Conflicts ───────────────────────────────────────────────────────────────
@@ -124,14 +116,3 @@ export const conflictsApi = {
   resolve: (operationId: number, strategy: 'KEEP_SERVER' | 'KEEP_LOCAL' | 'CREATE_CONFLICT_COPY') =>
     api.post<ApiResponse<string>>(`/conflicts/${operationId}/resolve`, { strategy }),
 };
-
-// ── Utilities ───────────────────────────────────────────────────────────────
-// sha256() is the only hashing primitive the app needs: both the full-file hash
-// and each CDC chunk's hash are computed from in-memory ArrayBuffers via the
-// browser's native crypto.subtle (no extra hashing library required).
-export async function sha256(data: ArrayBuffer): Promise<string> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-

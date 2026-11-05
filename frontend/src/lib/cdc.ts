@@ -1,41 +1,37 @@
 /**
- * Content-Defined Chunking (CDC) — Rabin fingerprint rolling hash.
+ * Content-Defined Chunking (CDC) — Rabin fingerprint rolling hash, streaming.
  *
- * This is a byte-for-byte port of the server's algorithm
- * (file-sync-service: com.filesync.chunking.ContentDefinedChunkingStrategy).
- * The polynomial, window size, and boundary condition below MUST stay identical
- * to the Java implementation, or client and server will compute different chunk
- * boundaries for the same file and dedup/resumable-upload will silently break.
+ * Port of the server's algorithm (file-sync-service: ContentDefinedChunkingStrategy).
+ * Polynomial, window size and boundary condition MUST stay identical to the Java
+ * implementation; shared golden vectors (src/lib/__fixtures__/cdc-golden.json, also
+ * read by the Java tests) fail the build if they drift.
  *
- * Boundary condition: a boundary is declared once the current chunk has reached
- * `minSize` and `fingerprint & (targetSize - 1) === 0` (targetSize must be a power
- * of two), or unconditionally once the chunk reaches `maxSize`.
+ * Boundary: once the chunk has reached `minSize`, a boundary is declared when
+ * `fingerprint & (targetSize - 1) === 0`, or unconditionally at `maxSize`.
  *
- * All fingerprint arithmetic is done with BigInt, explicitly masked to 64 bits
- * after every operation, to reproduce Java's `long` (two's-complement, mod 2^64)
- * overflow semantics exactly.
+ * Arithmetic: Java uses a 64-bit long. The recurrence fp = (fp << 1) ^ b ^ TABLE[out]
+ * only ever moves bits upward, so the low 32 bits of fp depend solely on the low 32
+ * bits of the previous fp and of TABLE entries. Because targetSize is required to be
+ * <= 2^31, the mask only inspects those low bits, so plain 32-bit integer math gives
+ * the identical decision to the 64-bit original, at native speed and with no BigInt.
  */
 
+export const WINDOW_SIZE = 64;
 const POLY = 0xbfe6b8a5bf378d83n;
-const WINDOW_SIZE = 64;
 const MASK64 = (1n << 64n) - 1n;
 const HIGH_BIT = 1n << 63n;
 
-/** Precomputed per-byte eviction table — same construction as the Java TABLE. */
-const TABLE: readonly bigint[] = buildTable();
+/** Low 32 bits of the Java TABLE (built with 64-bit arithmetic, then truncated). */
+const TABLE: Uint32Array = buildTable();
 
-function buildTable(): bigint[] {
-  const table = new Array<bigint>(256);
+function buildTable(): Uint32Array {
+  const table = new Uint32Array(256);
   for (let b = 0; b < 256; b++) {
     let v = BigInt(b);
     for (let i = 0; i < WINDOW_SIZE; i++) {
-      if ((v & HIGH_BIT) !== 0n) {
-        v = ((v << 1n) ^ POLY) & MASK64;
-      } else {
-        v = (v << 1n) & MASK64;
-      }
+      v = (v & HIGH_BIT) !== 0n ? ((v << 1n) ^ POLY) & MASK64 : (v << 1n) & MASK64;
     }
-    table[b] = v;
+    table[b] = Number(v & 0xffffffffn);
   }
   return table;
 }
@@ -47,59 +43,72 @@ export interface ChunkBoundary {
 }
 
 /**
- * Split `bytes` into content-defined chunk boundaries. Pure/deterministic —
- * does not hash; callers compute each chunk's SHA-256 separately (crypto.subtle
- * handles that far faster than a hand-rolled JS digest would).
+ * Incremental chunker. Feed bytes in arbitrary pieces with `push`; each call returns the
+ * boundaries completed by that piece. Call `finish` once to flush the trailing chunk.
+ * Memory use is O(window) regardless of input size.
  */
+export class CdcChunker {
+  private readonly window = new Uint8Array(WINDOW_SIZE);
+  private windowPos = 0;
+  private fingerprint = 0;
+  private chunkIndex = 0;
+  private chunkStart = 0;
+  private chunkLen = 0;
+  private fileOffset = 0;
+  private readonly mask: number;
+
+  constructor(
+    private readonly minSize: number,
+    targetSize: number,
+    private readonly maxSize: number
+  ) {
+    if (targetSize <= 0 || (targetSize & (targetSize - 1)) !== 0 || targetSize > 2 ** 31) {
+      throw new Error(`targetSize must be a power of two <= 2^31, got ${targetSize}`);
+    }
+    this.mask = (targetSize - 1) >>> 0;
+  }
+
+  push(bytes: Uint8Array): ChunkBoundary[] {
+    const out: ChunkBoundary[] = [];
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      const outByte = this.window[this.windowPos];
+      this.window[this.windowPos] = b;
+      this.windowPos = (this.windowPos + 1) & (WINDOW_SIZE - 1);
+
+      this.fingerprint = ((this.fingerprint << 1) ^ b ^ TABLE[outByte]) >>> 0;
+      this.chunkLen++;
+      this.fileOffset++;
+
+      const content = this.chunkLen >= this.minSize && (this.fingerprint & this.mask) === 0;
+      if (content || this.chunkLen >= this.maxSize) {
+        out.push({ index: this.chunkIndex++, offset: this.chunkStart, size: this.chunkLen });
+        this.chunkStart = this.fileOffset;
+        this.chunkLen = 0;
+        this.window.fill(0);
+        this.windowPos = 0;
+        this.fingerprint = 0;
+      }
+    }
+    return out;
+  }
+
+  finish(): ChunkBoundary[] {
+    if (this.chunkLen === 0) return [];
+    const last = { index: this.chunkIndex++, offset: this.chunkStart, size: this.chunkLen };
+    this.chunkStart = this.fileOffset;
+    this.chunkLen = 0;
+    return [last];
+  }
+}
+
+/** Convenience for in-memory input (tests, small data). */
 export function computeCdcBoundaries(
   bytes: Uint8Array,
   minSize: number,
   targetSize: number,
   maxSize: number
 ): ChunkBoundary[] {
-  if (bytes.length === 0) return [];
-  if ((targetSize & (targetSize - 1)) !== 0) {
-    throw new Error(`targetSize must be a power of two, got ${targetSize}`);
-  }
-
-  const mask = BigInt(targetSize - 1);
-  const boundaries: ChunkBoundary[] = [];
-
-  const window = new Uint8Array(WINDOW_SIZE);
-  let windowPos = 0;
-  let fingerprint = 0n;
-
-  let chunkIndex = 0;
-  let chunkStart = 0;
-  let chunkLen = 0;
-
-  for (let fileOffset = 0; fileOffset < bytes.length; fileOffset++) {
-    const b = bytes[fileOffset];
-
-    const outByte = window[windowPos];
-    window[windowPos] = b;
-    windowPos = (windowPos + 1) & (WINDOW_SIZE - 1);
-
-    fingerprint = ((fingerprint << 1n) ^ BigInt(b) ^ TABLE[outByte]) & MASK64;
-    chunkLen++;
-
-    const contentBoundary = chunkLen >= minSize && (fingerprint & mask) === 0n;
-    const forcedBoundary = chunkLen >= maxSize;
-
-    if (contentBoundary || forcedBoundary) {
-      boundaries.push({ index: chunkIndex++, offset: chunkStart, size: chunkLen });
-
-      chunkStart = fileOffset + 1;
-      chunkLen = 0;
-      window.fill(0);
-      windowPos = 0;
-      fingerprint = 0n;
-    }
-  }
-
-  if (chunkLen > 0) {
-    boundaries.push({ index: chunkIndex, offset: chunkStart, size: chunkLen });
-  }
-
-  return boundaries;
+  const c = new CdcChunker(minSize, targetSize, maxSize);
+  return [...c.push(bytes), ...c.finish()];
 }

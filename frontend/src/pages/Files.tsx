@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { get, set, del } from 'idb-keyval';
-import { filesApi, uploadApi, syncApi, devicesApi, sha256 } from '../api';
-import { computeCdcBoundaries } from '../lib/cdc';
+import { filesApi, uploadApi, syncApi, devicesApi } from '../api';
+import { scanInWorker } from '../lib/scanInWorker';
+import { withRetry } from '../lib/retry';
+import { downloadFile as streamDownload } from '../lib/download';
 import type { FileResponse, DeviceResponse } from '../types';
 
 // ── Stable UUID generator ─────────────────────────────────────────────────────
@@ -26,6 +28,16 @@ interface UploadSessionState {
   deviceId: number;
   clientOperationId: string;
   chunkSize: number;
+}
+
+async function waitForOperation(id: number, timeoutMs = 10 * 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (let delay = 300; Date.now() < deadline; delay = Math.min(delay * 1.5, 3000)) {
+    const op = (await withRetry(() => syncApi.getOperation(id))).data.data;
+    if (op.status === 'COMPLETED' || op.status === 'CONFLICT' || op.status === 'FAILED') return op;
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  throw new Error('Timed out waiting for the server to finish the upload');
 }
 
 export default function Files() {
@@ -98,8 +110,7 @@ export default function Files() {
    * 5. Compute delta against the session (server tells us which chunk hashes it's
    *    missing; everything else already exists server-side and just needs linking)
    * 6. Upload missing chunks' bytes; link everything else without re-sending bytes
-   * 7. Complete the upload session
-   * 8. Queue a SyncOperation linking the session to the file (stable clientOperationId)
+   * 7. Queue a SyncOperation (stable clientOperationId) and poll until the worker finishes it
    */
   const uploadFile = async (file: File) => {
     if (!selectedDeviceId) { setError('Select a device first'); return; }
@@ -113,22 +124,12 @@ export default function Files() {
       const configRes = await uploadApi.getConfig();
       const { minChunkSize, targetChunkSize, maxChunkSize } = configRes.data.data;
 
-      // 2. Read the whole file and compute CDC boundaries + the full-file hash.
-      //    (For very large files this should move to a Web Worker; kept simple here.)
-      setUploadProgress(1);
-      const fileBytes = new Uint8Array(await file.arrayBuffer());
-      const fileHash = await sha256(fileBytes.buffer as ArrayBuffer);
-      const boundaries = fileBytes.length === 0
-        ? []
-        : computeCdcBoundaries(fileBytes, minChunkSize, targetChunkSize, maxChunkSize);
-      setUploadProgress(5);
-
-      const clientChunks: { chunkIndex: number; chunkHash: string; chunkSize: number; offset: number }[] = [];
-      for (const b of boundaries) {
-        const slice = fileBytes.subarray(b.offset, b.offset + b.size);
-        const hash = await sha256(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
-        clientChunks.push({ chunkIndex: b.index, chunkHash: hash, chunkSize: b.size, offset: b.offset });
-      }
+      // 2. One streaming pass in a Web Worker: CDC boundaries, per-chunk hashes and the
+      //    full-file hash, without loading the file into memory or blocking the UI.
+      const scan = await scanInWorker(file, { minChunkSize, targetChunkSize, maxChunkSize },
+        (read, total) => setUploadProgress(1 + Math.round((read / Math.max(total, 1)) * 9)));
+      const fileHash = scan.fileHash;
+      const clientChunks = scan.chunks;
       setUploadProgress(10);
 
       // 3. Determine if this is a new upload or an update to an existing file
@@ -160,7 +161,7 @@ export default function Files() {
         sessionId = savedState.sessionId;
         clientOperationId = savedState.clientOperationId;
       } else {
-        const sessionRes = await uploadApi.initUpload(fileId, selectedDeviceId, file.size, fileHash, baseVersion);
+        const sessionRes = await withRetry(() => uploadApi.initUpload(fileId, selectedDeviceId, file.size, fileHash, baseVersion));
         sessionId = sessionRes.data.data.sessionId;
         clientOperationId = generateUUID(); // stable per upload attempt, stored in IDB
         savedState = {
@@ -178,12 +179,12 @@ export default function Files() {
       // 5. Compute delta against the session. This both tells us which chunk
       //    hashes the server is missing AND records totalChunks on the session
       //    (completeUpload requires that to be set for CDC sessions).
-      const deltaRes = await uploadApi.computeDelta(
+      const deltaRes = await withRetry(() => uploadApi.computeDelta(
         fileId,
         clientChunks.map(({ chunkIndex, chunkHash, chunkSize }) => ({ chunkIndex, chunkHash, chunkSize })),
         baseVersion,
         sessionId,
-      );
+      ));
       const missingHashes = new Set(deltaRes.data.data);
 
       // Indices already uploaded in a resumed session don't need to be touched again.
@@ -200,7 +201,7 @@ export default function Files() {
 
       // 6a. Link chunks the server already has — no bytes sent.
       for (const c of toLink) {
-        await uploadApi.linkExistingChunk(sessionId, c.chunkIndex, c.chunkHash, c.chunkSize);
+        await withRetry(() => uploadApi.linkExistingChunk(sessionId, c.chunkIndex, c.chunkHash, c.chunkSize));
       }
       setUploadProgress(15);
 
@@ -215,7 +216,7 @@ export default function Files() {
             const c = uploadQueue.shift();
             if (!c) break;
             const chunkBlob = file.slice(c.offset, c.offset + c.chunkSize);
-            await uploadApi.uploadChunk(sessionId, c.chunkIndex, c.chunkHash, chunkBlob);
+            await withRetry(() => uploadApi.uploadChunk(sessionId, c.chunkIndex, c.chunkHash, chunkBlob));
             uploadedCount++;
             setUploadProgress(15 + Math.round((uploadedCount / toUpload.length) * 75));
           }
@@ -229,20 +230,19 @@ export default function Files() {
 
       setUploadProgress(90);
 
-      // 7. Complete the upload session (triggers full-hash verification on server)
-      await uploadApi.completeUpload(sessionId);
-      setUploadProgress(95);
+      setUploadProgress(90);
 
-      // 8. Queue a SyncOperation that links this session to the file
-      //    clientOperationId is stable — if the network fails here, retrying is idempotent
-      await syncApi.queueOperation(
-        selectedDeviceId,
-        fileId,
-        'UPLOAD',
-        baseVersion,
-        clientOperationId,
-        sessionId,
-      );
+      // 7. Queue the UPLOAD operation. The server worker verifies and commits the version; its
+      //    outcome is authoritative, so poll the operation instead of assuming success.
+      //    clientOperationId is stable: retrying this call after a network failure is idempotent.
+      const queued = await withRetry(() => syncApi.queueOperation(
+        selectedDeviceId, fileId, 'UPLOAD', baseVersion, clientOperationId, sessionId));
+      const op = await waitForOperation(queued.data.data.id);
+      if (op.status !== 'COMPLETED') {
+        throw new Error(op.status === 'CONFLICT'
+          ? 'Upload conflicts with a newer version; resolve it on the Conflicts page.'
+          : op.errorMessage || `Upload ${op.status.toLowerCase()}`);
+      }
 
       // 9. Clean up IDB state and refresh
       await del(stateKey);
@@ -268,11 +268,11 @@ export default function Files() {
   };
 
   const downloadFile = async (file: FileResponse) => {
-    const res = await filesApi.download(file.id);
-    const url = URL.createObjectURL(res.data as Blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = file.name; a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await streamDownload(file.id, file.name);
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') setError(e.message || 'Download failed');
+    }
   };
 
   const formatSize = (bytes: number | null) => {

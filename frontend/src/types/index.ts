@@ -57,7 +57,7 @@ export interface SyncOperationResponse {
   deviceId: number;
   fileId: number | null;
   operation: string;
-  status: 'PENDING' | 'SYNCING' | 'SYNCED' | 'CONFLICT' | 'FAILED';
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'CONFLICT' | 'FAILED';
   baseVersion: number | null;
   retryCount: number;
   errorMessage: string | null;
